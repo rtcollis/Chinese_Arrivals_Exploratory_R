@@ -1,0 +1,2314 @@
+---
+title: "Globetrotters FK Analysis"
+output: html_document
+    
+---
+
+# 1. Introduction
+## 1.1 Team Globetrotters
+
+Team Globetrotters is comprised of:
+
++ Jose Vilardy
++ Borja Ureta
++ Nicole Lerman
++ Timucin Engin
++ Robin Collis
++ Sandra Sorza
+
+##1.2 Background on Capstone project
+
+We partnered with DFS Group to forecast travel and purchase intent of Chinese consumers to Paris. DFS Group is the world’s leading luxury travel retailer. Network consists of duty free stores located in 11 major global airports and 20 downtown T Galleria locations.
+
+DFS has re-oriented its strategy towards the Chinese market and being as close as possible to where Chinese travellers are. As part of this strategy, DFS will be opening a new store in Paris, France. This store will have a deep focus on Chinese tourists.
+
+Our initial goal is to predict flows of Chinese tourists into Paris. For this, we will leverage certain information owned by DFS on actual and forward looking reservation data from a proprietary database.
+
+```{r Import libraries, message=FALSE, warning=FALSE}
+# Creating a vector of packages used within.  
+packages <- c('caTools','chron',
+              'DMwR2','doParallel','dplyr',
+              'e1071',
+              'ggplot2','gridExtra',
+              'here',
+              'janitor',
+              'knitr',
+              'lme4','lubridate',
+              'MASS',
+              'neuralnet', 'nnet',
+              'randomForest','readr', 'readxl','rlang','rpart','rpart.plot',
+              'stats',
+              'tidyverse',
+              'scales',
+              'cowplot',
+              'reshape2')
+# Checking for package installations on the system and installing if not found.
+if (length(setdiff(packages, rownames(installed.packages()))) > 0) {
+  install.packages(setdiff(packages, rownames(installed.packages())))  
+}
+# Including the packages for use.
+for(package in packages){
+  library(package, character.only = TRUE)
+}
+#Ensure wd is set to current location by using here()
+setwd(here::here())
+
+```
+
+##1.3 The dataset
+
+The main data source for this exercise is Forward Keys ("FK"). FK is a company that analyses millions of daily flights and provides clients with insights for making their tactical decisions. FK crunches and analyzes over 17 million booking transactions a day. Additionally, they pull a wide range of other relevant data like flight searches and aviation capacity. 
+
+DFS provided us with a data pull from FK. This dataset contains the actual information on Chinese travelers to Paris between January 1 2015 and August 31, 2019. It also provides additional valuable information such as length of stay in Paris, total trip duration (overall), number of people per booking, lead times between booking and flight, cabin, distribution channels, type of stay, one-way/return, travel day of the week and traveler profile (i.e. business, leisure and group).
+
+##1.4 Goal of this analysis
+
+We will leverage the FK data with two goals:
+
++ Visualization and insights: analyze the data and capture relevant trends, insights and an initial indication of potential predictors
++ Predictive modeling: develop a predictive model that predicts the number of travelers to Paris on a particular date.
+
+#2. Analysis
+
+##2.1 Data Import
+
+The dataset was included in a spreadsheet that contained 3 tabs, with a few tables. We imported the data and run a few data cleaning and structuring code lines to enable the subsequen data analysis.
+
+```{r Paris Data Import, warning=FALSE, message=FALSE}
+#Import dataset
+#Import table with 15 to 19 data
+pdset15_19 <- as.tibble(read_xlsx('forwardkeys-Arrivals-History-Paris(FR)_PAR.xlsx', col_names = FALSE, na = c("", "NA"), sheet = 'China-CN',
+                                skip = 121, n_max = 1703))
+#Import 2014 from second table
+pdset14 <- as.tibble(read_xlsx('forwardkeys-Arrivals-History-Paris(FR)_PAR.xlsx', col_names = FALSE, na = c("", "NA"), sheet = 'China-CN',
+                                skip = 1828, n_max = 364))
+#Join both tables by row
+pdset <- rbind(pdset14, pdset15_19)
+
+
+#Change column names
+colnames(pdset) <- c('Date', 'Total_trav', 'Total_trav_China/CN', 'Returnhome', 'ShortTransfer', 'DwellingTransfer', 'LongTransfer', 'Stopover', 'DayTrip', 'LoS_1night', 'LoS_2nights', 'LoS_3nights', 'LoS_4to5nights', 'LoS_6to8nights', 'LoS_9to13nights', 'LoS_14to21nights', 'LoS_22nightsormore', 'Endoftrip', 'TrDur_0night', 'TrDur_1night', 'TrDur_2nights', 'TrDur_3nights', 'TrDur_4to5nights', 'TrDur_6to8nights', 'TrDur_9to13nights', 'TrDur_14to21nights', 'TrDur_22nightsormore', 'ppb_1pax', 'ppb_2pax', 'ppb_3pax', 'ppb_4pax', 'ppb_5pax', 'ppb_6to9pax', 'ppb_10pl_pax', 'LeadT_0to4days', 'LeadT_5to14days', 'LeadT_15to29days', 'LeadT_30to44days', 'LeadT_45to59days', 'LeadT_60to89days', 'LeadT_90to119days', 'LeadT_120to364days', 'Cabin_Economy', 'Cabin_EconomyPremium', 'Cabin_Business', 'Cabin_First', 'DistCh_OnlineTA', 'DistCh_CorporateTA', 'DistCh_RetailTA', 'DistCh_OtherTA', 'TypeSt_Weekendstay', 'TypeSt_Workweekstay', 'TypeSt_Combinedstay', 'TypeSt_Nostay', 'OneRet_Oneway', 'OneRet_Return', 'OneRet_MultiCity', 'TrDay_Sunday', 'TrDay_Monday', 'TrDay_Tuesday', 'TrDay_Wednesday', 'TrDay_Thursday', 'TrDay_Friday', 'TrDay_Saturday', 'Profile_Business', 'Profile_Leisure', 'Profile_Group', 'Profile_VFRndExpats', 'Sign_InitialBookings', 'Sign_Partialadditions_modif', 'Sign_Partialcancellations', 'Sign_Fulltripcancellations', 'Avg.LOS', 'Avg.LOT', 'Avg.LT', 'Avg.PPB')
+
+#Get rid of columns that have no data and are not useful for our analysis
+pdset <- dplyr::select(pdset, -c('Total_trav_China/CN', 'Returnhome', 'ShortTransfer', 'DwellingTransfer', 'LongTransfer', 'Stopover', 'DayTrip', 'Endoftrip', 'TrDur_0night', 'TypeSt_Nostay', 'Avg.LOS', 'Avg.LOT', 'Avg.LT', 'Avg.PPB', 'TrDay_Sunday', 'TrDay_Monday', 'TrDay_Tuesday', 'TrDay_Wednesday', 'TrDay_Thursday', 'TrDay_Friday', 'TrDay_Saturday'))
+
+#Add day of the week, week, month and year.
+pdset <- mutate(pdset, 
+                WeekDay=wday(pdset$Date, label = TRUE), 
+                Month=month(pdset$Date, label = TRUE), 
+                Week=week(pdset$Date),
+               Year=year(pdset$Date))
+
+```
+
+
+```{r Venice Data Import, warning=FALSE, message=FALSE}
+#Import dataset
+#Import table with 15 to 19 data
+vdset15_19 <- as.tibble(read_xlsx('forwardkeys-Arrivals-History-Venice(IT)_VCE.xlsx', col_names = FALSE, na = c("", "NA"), sheet = 'China-CN',
+                                skip = 121, n_max = 1703))
+#Import 2014 from second table
+vdset14 <- as.tibble(read_xlsx('forwardkeys-Arrivals-History-Venice(IT)_VCE.xlsx', col_names = FALSE, na = c("", "NA"), sheet = 'China-CN',
+                                skip = 1828, n_max = 364))
+#Join both tables by row
+vdset <- rbind(vdset14, vdset15_19)
+
+
+#Change column names
+colnames(vdset) <- c('Date', 'Total_trav', 'Total_trav_China/CN', 'Returnhome', 'ShortTransfer', 'DwellingTransfer', 'LongTransfer', 'Stopover', 'DayTrip', 'LoS_1night', 'LoS_2nights', 'LoS_3nights', 'LoS_4to5nights', 'LoS_6to8nights', 'LoS_9to13nights', 'LoS_14to21nights', 'LoS_22nightsormore', 'Endoftrip', 'TrDur_0night', 'TrDur_1night', 'TrDur_2nights', 'TrDur_3nights', 'TrDur_4to5nights', 'TrDur_6to8nights', 'TrDur_9to13nights', 'TrDur_14to21nights', 'TrDur_22nightsormore', 'ppb_1pax', 'ppb_2pax', 'ppb_3pax', 'ppb_4pax', 'ppb_5pax', 'ppb_6to9pax', 'ppb_10pl_pax', 'LeadT_0to4days', 'LeadT_5to14days', 'LeadT_15to29days', 'LeadT_30to44days', 'LeadT_45to59days', 'LeadT_60to89days', 'LeadT_90to119days', 'LeadT_120to364days', 'Cabin_Economy', 'Cabin_EconomyPremium', 'Cabin_Business', 'Cabin_First', 'DistCh_OnlineTA', 'DistCh_CorporateTA', 'DistCh_RetailTA', 'DistCh_OtherTA', 'TypeSt_Weekendstay', 'TypeSt_Workweekstay', 'TypeSt_Combinedstay', 'TypeSt_Nostay', 'OneRet_Oneway', 'OneRet_Return', 'OneRet_MultiCity', 'TrDay_Sunday', 'TrDay_Monday', 'TrDay_Tuesday', 'TrDay_Wednesday', 'TrDay_Thursday', 'TrDay_Friday', 'TrDay_Saturday', 'Profile_Business', 'Profile_Leisure', 'Profile_Group', 'Profile_VFRndExpats', 'Sign_InitialBookings', 'Sign_Partialadditions_modif', 'Sign_Partialcancellations', 'Sign_Fulltripcancellations', 'Avg.LOS', 'Avg.LOT', 'Avg.LT', 'Avg.PPB')
+
+#Get rid of columns that have no data and are not useful for our analysis
+vdset <- dplyr::select(vdset, -c('Total_trav_China/CN', 'Returnhome', 'ShortTransfer', 'DwellingTransfer', 'LongTransfer', 'Stopover', 'DayTrip', 'Endoftrip', 'TrDur_0night', 'TypeSt_Nostay', 'Avg.LOS', 'Avg.LOT', 'Avg.LT', 'Avg.PPB', 'TrDay_Sunday', 'TrDay_Monday', 'TrDay_Tuesday', 'TrDay_Wednesday', 'TrDay_Thursday', 'TrDay_Friday', 'TrDay_Saturday'))
+
+#Add day of the week, week, month and year.
+vdset <- mutate(vdset, 
+                WeekDay=wday(vdset$Date, label = TRUE), 
+                Month=month(vdset$Date, label = TRUE), 
+                Week=week(vdset$Date),
+               Year=year(vdset$Date))
+```
+
+
+##2.2 Exploratory Analysis
+
+We have included below the summary and structure of the dataset
+
+```{r}
+str(pdset)
+summary(pdset)
+```
+
+Below we start plotting some of the main variables
+
+###2.2.1 Total Arrivals Analysis 
+
+Given 2019 is only a partial year with only 8 months of data, it has been excluded from this initial piece of exploratory analysis 
+
+```{r Paris Total Traveler Analysis, echo=FALSE, fig.width=20, fig.height=15}
+
+# Create Paris subset to exclude partial 2019 data
+pdset_14_18 <- subset(pdset, Year <= 2018)
+vdset_14_18 <- subset(vdset, Year <= 2018)
+
+# Define colours
+barfill = "gold1"
+barlines = "goldenrod2"
+
+# Inbound passengers by Year Ex 2019
+p_hist_tt_y <- ggplot(data = pdset_14_18, aes(x = Year, y = Total_trav)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Year", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Passengers Arrivals Direct to Paris by Year 2014 - 2018")
+
+# Inbound passengers by Month Ex 2019
+p_hist_tt_m <- ggplot(data = pdset_14_18, aes(x = Month, y = Total_trav)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Month", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Passengers Arrivals Direct to Paris by Month 2014 - 2018")
+
+# Inbound passengers by Day of Week Ex 2019 
+p_hist_tt_d <- ggplot(data = pdset_14_18, aes(x = WeekDay, y = Total_trav)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Week Day", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Passengers Arrivals Direct to Paris by Weekday 2014 - 2018")
+
+# Inbound passengers by Week Ex 2019 
+p_hist_tt_wk <- ggplot(data = pdset_14_18, aes(x = Week, y = Total_trav)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Week", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Passengers Arrivals Direct to Paris by Week 2014 - 2018")
+
+
+# Plot grid layout using plot_grid function
+plot_grid(p_hist_tt_y, p_hist_tt_m, p_hist_tt_d, p_hist_tt_wk, nrow = 2)
+
+```
+
+One can clearly see the drop-off in inbound passengers from from 2016 which can be attributed to the Paris terrorist attacks occuring in November 2015. Whilst 2016 received the lowest number of inbound direct visitors in our data set, there has been an uptick in subsequent years reflecitng increased tourism confidence in Paris  
+
+From a month perspective, we can see how the strongest period is June through September, with July being the strongest month.
+
+Saturday is the strongest day of the week, followed by Sunday, with Tuesday being the lowest.
+
+The pattern is very easy to observe when we plot the weeks, with a strong peak during the month of July, a decline in August and pick up in September, declining from then to the end of the year.
+
+In conclusion, we can observe how there is a strong pattern that is repeated each year with a peak during the summer months, with a slight decline in August that picks up in September. Weekend are the strongest days of the week. In terms of years 2015 showed the largest flows of Chinese tourists, with 2017 and 2018 showing improved performance on 2016.
+
+
+```{r Passengers by Month by Year, echo=FALSE, fig.width=20, fig.height=10}
+
+# Subset dataset for arrivals, month and year
+pdset_14_18_m_y <- pdset_14_18%>%dplyr::select(Month, Year, Total_trav)%>%group_by(Month, Year)%>%summarise(Total_trav = sum(Total_trav))
+
+# Create line chart
+line_chart_paris <- ggplot(data = pdset_14_18_m_y, aes(x = Month, y = Total_trav, group = Year, colour = as.factor(Year))) +
+        geom_line() +
+        geom_point() +
+        labs(x="Month", y="Passenger Arrivals", colour="Year") +
+        scale_y_continuous(labels = comma) +
+        ggtitle("Chinese Passenger Arrival to Paris by Year by Month") +      
+        theme_light() +
+        theme(legend.position="top")
+
+# Plot line chart
+line_chart_paris
+
+```
+
+Not surprisingly, the arrival of new Chinese passengers peak for both Paris during the summer months, where the month of July is the most popular month. While we dont hav the chart for Venice here, when we looked at the data for Venice, we noticed that the prominence of the summer months are more pronounced relative to Venice, which means potentially DFS will need to carry a somewhat larger level of summer months inventory targeted for Chinese clients relative to Venice. 
+
+In addition, since 2015, it seems like the flow of Chinese passengers to Paris has become a bit more even. While summer months are still the most popular months, we now observed relatively higher level of visitors in other months of the year as well, particularly fall and the spring, while the winter months, November to March represent the lowest levels of activities for Chinese tourism. 
+
+
+###2.2.2 Length of Stay Analysis
+
+The forward keys data set allows us to assess arrivals by length of stay
+
+```{r Volume of Arrivals by Length of Stay, echo=FALSE, fig.width=20, fig.height=5}
+
+# Inbound passengers by LoS Ex 2019
+# Select required rows from data frame 
+hist_tt_y_los <- subset(pdset_14_18, select = c("LoS_1night", "LoS_2nights", "LoS_3nights", "LoS_4to5nights","LoS_6to8nights", "LoS_9to13nights", "LoS_14to21nights", "LoS_22nightsormore", "Year"))
+names(hist_tt_y_los) <- c("Los 1 Night", "Los 2 Nights", "LoS 3 Nights", "Los 4 to 5 Nights", "Los 6 to 8 Nights", "LoS 9 to 13 Nights", "Los 14 to 21 Nights", "Los 21 Nights or More", "Year")
+hist_tt_y_los <- aggregate(hist_tt_y_los, by = list(hist_tt_y_los$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_los <- hist_tt_y_los[ , !names(hist_tt_y_los) %in% drops] 
+names(hist_tt_y_los) <- c("Year", "Los 1 Night", "Los 2 Nights", "LoS 3 Nights", "Los 4 to 5 Nights", "Los 6 to 8 Nights", "LoS 9 to 13 Nights", "Los 14 to 21 Nights", "Los 21 Nights or More")
+hist_tt_y_los_melt <- melt(hist_tt_y_los, id="Year")
+
+# Transpose the data set
+hist_tt_y_los_transpose <- data.frame(t(hist_tt_y_los))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_los_transpose) <- as.matrix(hist_tt_y_los_transpose[1, ])
+hist_tt_y_los_transpose <- hist_tt_y_los_transpose[-1, ]
+hist_tt_y_los_transpose[] <- lapply(hist_tt_y_los_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_los_transpose <- as.data.frame(hist_tt_y_los_transpose)
+hist_tt_y_los_transpose$LoS <- rownames(hist_tt_y_los_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_los_transpose) <- NULL
+
+# Add Total Row
+hist_tt_y_los_transpose$Total <- hist_tt_y_los_transpose$`2014` + 
+                                  hist_tt_y_los_transpose$`2015` + 
+                                  hist_tt_y_los_transpose$`2016` + 
+                                  hist_tt_y_los_transpose$`2017` + 
+                                  hist_tt_y_los_transpose$`2018`
+
+
+# Add levels to maintain order
+hist_tt_y_los_transpose$LoS <- factor(hist_tt_y_los_transpose$LoS, levels = hist_tt_y_los_transpose$LoS)
+
+p_hist_tt_los_barchart <- ggplot(data = hist_tt_y_los_transpose, aes(x = LoS, y = Total)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Length of Stay", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Arrivals to Paris by Length of Stay 2014 - 2018")
+
+```
+
+
+```{r Boxplot of Daily Arrivals by Length of Stay, echo=FALSE, fig.width=20, fig.height=5}
+
+hist_tt_y_los <- subset(pdset_14_18, select = c("LoS_1night", "LoS_2nights", "LoS_3nights", "LoS_4to5nights","LoS_6to8nights", "LoS_9to13nights", "LoS_14to21nights", "LoS_22nightsormore", "Date"))
+names(hist_tt_y_los) <- c("Los 1 Night", "Los 2 Nights", "LoS 3 Nights", "Los 4 to 5 Nights", "Los 6 to 8 Nights", "LoS 9 to 13 Nights", "Los 14 to 21 Nights", "Los 21 Nights or More", "Date")
+hist_tt_y_los_melt <- melt(hist_tt_y_los, id = "Date")
+
+p_hist_tt_y_los_boxplot <- ggplot(hist_tt_y_los_melt, aes(x = variable, y = value))+
+        geom_boxplot(alpha = 0) +
+        geom_jitter(alpha = 0.1, color = "tomato") +
+        theme_light() +
+        labs(x = "Length of Stay", y = "Daily Arrivals Volume") + 
+        ggtitle("Length of Chinese Arrivals to Paris by Daily Arrival Volume")
+ 
+```
+
+```{r LoS Plot barchart and boxplot, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot charts in grid
+plot_grid(p_hist_tt_los_barchart + coord_flip(), p_hist_tt_y_los_boxplot + coord_flip(), nrow = 1)
+
+```
+According to forward keys data, a total of 1.152mn Chinese travelers landed in Paris between 2014 and 2018. 
+
+Chinese tourists traveling into Paris generally stay several nights in the city. Short term stay categories (1 night, 2 nights and 3 nights) together only represent 16% of the total bookings, while 4 to 5 nights represent the most popular category with 38% of the bookings, and collectively stays above 3 nights represent 84% of the total bookings.
+
+After 4 - 5 nights, the most popular category is 6 to 8 nights which represents 22.8% of the travelers, while people only staying one night before proceeding to another destination represented only 25 of the total travelers. 
+
+This positions Paris as an attractive city for the luxury retailers. Given the average length of stay of the Chinese passengers, DFS can have multiple touch points with potential clients (from airport display ads to boutique in the city) throughouttheir stay. Also, potentially the same client could drop by more than once in the same boutique (unlike the Chinese tourists who are on tour and spend a day or less in each city they visit via bus). 
+
+However, this also creates one particular challenge; arguably the larger length of stay gives the potential client more time to compare prices & products across different outlets when making a purchase decision, meaning for customers with same price elasticity, DFS prices should probably be not too far from the market prices for comparable products.  
+
+```{r Length of stay heatmap years , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by length of stay by year
+hist_tt_y_los <- subset(pdset_14_18, select = c("LoS_1night", "LoS_2nights", "LoS_3nights", "LoS_4to5nights","LoS_6to8nights", "LoS_9to13nights", "LoS_14to21nights", "LoS_22nightsormore", "Year"))
+hist_tt_y_los <- aggregate(hist_tt_y_los, by = list(hist_tt_y_los$Year), FUN = sum)
+drops <- c("Year")
+hist_tt_y_los <- hist_tt_y_los[ , !names(hist_tt_y_los) %in% drops] 
+names(hist_tt_y_los) <- c("Year", "Los 1 Night", "Los 2 Nights", "LoS 3 Nights", "Los 4 to 5 Nights", "Los 6 to 8 Nights", "LoS 9 to 13 Nights", "Los 14 to 21 Nights", "Los 21 Nights or More")
+hist_tt_y_los_melt <- melt(hist_tt_y_los, id="Year")
+names(hist_tt_y_los_melt) <- c("Year", "Length_of_Stay", "Value")
+
+hist_tt_y_los_melt$Year <- as.factor(hist_tt_y_los_melt$Year)
+
+
+p_hist_tt_y_los_melt_heatmap <- ggplot(hist_tt_y_los_melt, aes(x = hist_tt_y_los_melt$Year, y = hist_tt_y_los_melt$Length_of_Stay)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Year", expand = c(0, 0)) +
+                                    scale_y_discrete("Length of Stay", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Length of Chinese Arrival to Paris by Year") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+```{r Length of stay heatmap months , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by length of stay by month
+hist_tt_m_los <- subset(pdset_14_18, select = c("LoS_1night", "LoS_2nights", "LoS_3nights", "LoS_4to5nights","LoS_6to8nights", "LoS_9to13nights", "LoS_14to21nights", "LoS_22nightsormore", "Month"))
+hist_tt_m_los$Month <- as.integer(hist_tt_m_los$Month)
+
+hist_tt_m_los <- aggregate(hist_tt_m_los, by = list(hist_tt_m_los$Month), FUN = sum)
+drops <- c("Month")
+hist_tt_m_los <- hist_tt_m_los[ , !names(hist_tt_m_los) %in% drops] 
+names(hist_tt_m_los) <- c("Month", "Los 1 Night", "Los 2 Nights", "LoS 3 Nights", "Los 4 to 5 Nights", "Los 6 to 8 Nights", "LoS 9 to 13 Nights", "Los 14 to 21 Nights", "Los 21 Nights or More")
+hist_tt_m_los_melt <- melt(hist_tt_m_los, id="Month")
+names(hist_tt_m_los_melt) <- c("Month", "Length_of_Stay", "Value")
+
+hist_tt_m_los_melt$Month <- as.factor(hist_tt_m_los_melt$Month)
+
+p_hist_tt_m_los_heatmap <- ggplot(hist_tt_m_los_melt, aes(x = hist_tt_m_los_melt$Month, y = hist_tt_m_los_melt$Length_of_Stay)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Month", expand = c(0, 0)) +
+                                    scale_y_discrete("Length of Stay", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Length of Chinese Arrival to Paris by Month") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r Length of stay Heatmaps plots, echo=FALSE, fig.width=20, fig.height=15}
+
+# Plot heatmaps
+plot_grid(p_hist_tt_y_los_melt_heatmap, p_hist_tt_m_los_heatmap, nrow = 2)
+
+```
+
+We also looked at the evolution of the length of stay from 2014 to 2018. While Paris has the advantage of being a city where the incoming Chinese passengers spend several nights which creates a major commercial opportunity for DFS, we also observe that the average length of stay has been declining visibly between 2014 - 18 in the most popular 4 - 5 nights category while the othe categories remained relatively unchanged. However, as we will discuss in the next section, the underlying story here is slightly different. 
+
+Looking at the arrival data on a monthly basis, and analyzing each stay length category, we see that the overall length of stay generally seems to increase in the summer months for the most popular categories (4 - 5 nights and 6 to 9 nights), while in the shorter term stay categories the seasonal changes are muted. 
+
+Therefore we believe the summer months will be of utmost importance to DFS as it should try to leverage on the increased number of stays by The Chinese tourists. To capital on the opportunity, DFS should increase its marketing & advertising budget for the summer to establish multiple contact points with the Chinese clients (starting with display ads at the airport) and have in store promotions to trigger return clients (such as 5% discount coupons with each purchase valide for 24 - 48 hours for your second purchase) and increase their store traffic. This also means, DFS will potentially need to carry a larger inventory as well as a larger store salestaff during the peak summer months. 
+
+```{r Change in Passenger Length of Stay by Year, echo=FALSE, fig.width=20, fig.height=10}
+
+# Select required rows from data frame 
+hist_tt_y_los <- subset(pdset_14_18, select = c("LoS_1night", "LoS_2nights", "LoS_3nights", "LoS_4to5nights","LoS_6to8nights", "LoS_9to13nights", "LoS_14to21nights", "LoS_22nightsormore", "Year"))
+names(hist_tt_y_los) <- c("Los 1 Night", "Los 2 Nights", "LoS 3 Nights", "Los 4 to 5 Nights", "Los 6 to 8 Nights", "LoS 9 to 13 Nights", "Los 14 to 21 Nights", "Los 21 Nights or More", "Year")
+hist_tt_y_los <- aggregate(hist_tt_y_los, by = list(hist_tt_y_los$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_los <- hist_tt_y_los[ , !names(hist_tt_y_los) %in% drops] 
+names(hist_tt_y_los) <- c("Year", "Los 1 Night", "Los 2 Nights", "LoS 3 Nights", "Los 4 to 5 Nights", "Los 6 to 8 Nights", "LoS 9 to 13 Nights", "Los 14 to 21 Nights", "Los 21 Nights or More")
+hist_tt_y_los_melt <- melt(hist_tt_y_los, id="Year")
+
+# Transpose the data set
+hist_tt_y_los_transpose <- data.frame(t(hist_tt_y_los))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_los_transpose) <- as.matrix(hist_tt_y_los_transpose[1, ])
+hist_tt_y_los_transpose <- hist_tt_y_los_transpose[-1, ]
+hist_tt_y_los_transpose[] <- lapply(hist_tt_y_los_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_los_transpose <- as.data.frame(hist_tt_y_los_transpose)
+hist_tt_y_los_transpose$LoS <- rownames(hist_tt_y_los_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_los_transpose) <- NULL
+
+# Add delta column
+hist_tt_y_los_transpose$delta <- hist_tt_y_los_transpose$`2018` - hist_tt_y_los_transpose$`2014`
+hist_tt_y_los_transpose$delta2 <- hist_tt_y_los_transpose$`2018` - hist_tt_y_los_transpose$`2016`
+
+# Add levels to maintain order
+hist_tt_y_los_transpose$LoS <- factor(hist_tt_y_los_transpose$LoS, levels = hist_tt_y_los_transpose$LoS)
+
+# Create Delta chart
+p_hist_tt_y_los_delta <- ggplot(data = hist_tt_y_los_transpose, aes(x = LoS, y = delta, label = delta)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `LoS`, yend = delta, xend = `LoS`), color =  "black") +
+                labs(x = "Passenger Length of Stay", y = "Delta Between 2018 and 2014") + 
+                ggtitle("Delta in Chinese Arrivals to Paris by Length of Stay 2014 to 2018") +
+                scale_y_continuous(labels = comma)
+
+p_hist_tt_y_los_delta2 <- ggplot(data = hist_tt_y_los_transpose, aes(x = LoS, y = delta2, label = delta2)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `LoS`, yend = delta2, xend = `LoS`), color =  "black") +
+                labs(x = "Passenger Length of Stay", y = "Delta Between 2018 and 2016") + 
+                ggtitle("Delta in Chinese Arrivals to Paris by Length of Stay 2016 to 2018") +
+                scale_y_continuous(labels = comma)
+
+plot_grid(p_hist_tt_y_los_delta + coord_flip(), p_hist_tt_y_los_delta2 + coord_flip(), nrow = 1)
+
+```
+
+**Length of Stay Conclusions**
+
+As discussed earlier, While a large majority of Chinese passengers traveling to Paris stay 4 nights or longer, we also note that over the past 4 years (2014to 2018), there has been a visible decline (40,000 people) in the bracket of tourists who stay 4 to 5 nights, while there is an increase in the 6 to 8 nights, and 9 to 13 night categories, while the change in other categories were relatively muted. The delta analysis clearly shows these trends. 
+
+To understand the drivers of the decline, we did some google search on Parisian tourism stats, and the search right away brought results / articles on the devastating terrorist attacks in the city in 2015 and the negative impact on the tourism flows. To look at the trend, we divided our dataset into two, took out 2015, the year of the attack and then looked at the trends in length of stay from 2016 to 2018 (the recovery period) and the data clearly show a recovery. While the negative delta for 4 to 5 nights is about 40,000 between 2014 - 2018 (which includes the events of 2015), delta from 2016 to 2018 is a positive of about 4,100 bookings. Similarly, 6 to 8 nights stays increased by alomost 10,000 in the same period and 9 to 13 nights by about 5,000. 
+
+Therefore, isolating the aftermath of the 2015 attacks, we dont necessarily see the average length of stays in Paris declining visibly over the next few years. 
+
+###2.2.3 Passengers per Booking Analysis
+
+The forward keys data set allows us to assess arrivals by number of passengers by booking
+
+```{r Volume of Arrivals by Passenger Bookings, echo=FALSE, fig.width=20, fig.height=5}
+
+# Inbound passengers by PaX Ex 2019
+# Select required rows from data frame 
+hist_tt_y_pax <- subset(pdset_14_18, select = c("ppb_1pax", "ppb_2pax", "ppb_3pax", "ppb_4pax","ppb_5pax", "ppb_6to9pax", "ppb_10pl_pax", "Year"))
+names(hist_tt_y_pax) <- c("1 Passenger per Booking", "2 Passengers per Booking", "3 Passengers per Booking", "4 Passengers per Booking","5 Passengers per Booking", "6 to 9 Passengers per Booking", "10 Plus Passengers per", "Year")
+
+hist_tt_y_pax <- aggregate(hist_tt_y_pax, by = list(hist_tt_y_pax$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_pax <- hist_tt_y_pax[ , !names(hist_tt_y_pax) %in% drops] 
+names(hist_tt_y_pax) <- c("Year", "1 Passenger per Booking", "2 Passengers per Booking", "3 Passengers per Booking", "4 Passengers per Booking","5 Passengers per Booking", "6 to 9 Passengers per Booking", "10 Plus Passengers per")
+hist_tt_y_pax_melt <- melt(hist_tt_y_pax, id="Year")
+
+# Transpose the data set
+hist_tt_y_pax_transpose <- data.frame(t(hist_tt_y_pax))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_pax_transpose) <- as.matrix(hist_tt_y_pax_transpose[1, ])
+hist_tt_y_pax_transpose <- hist_tt_y_pax_transpose[-1, ]
+hist_tt_y_pax_transpose[] <- lapply(hist_tt_y_pax_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_pax_transpose <- as.data.frame(hist_tt_y_pax_transpose)
+hist_tt_y_pax_transpose$pax <- rownames(hist_tt_y_pax_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_pax_transpose) <- NULL
+
+
+# Add Total Row
+hist_tt_y_pax_transpose$Total <- hist_tt_y_pax_transpose$`2014` + 
+                                  hist_tt_y_pax_transpose$`2015` + 
+                                  hist_tt_y_pax_transpose$`2016` + 
+                                  hist_tt_y_pax_transpose$`2017` + 
+                                  hist_tt_y_pax_transpose$`2018`
+
+
+# Add levels to maintain order
+hist_tt_y_pax_transpose$pax <- factor(hist_tt_y_pax_transpose$pax, levels = hist_tt_y_pax_transpose$pax)
+
+p_hist_tt_pax_barchart <- ggplot(data = hist_tt_y_pax_transpose, aes(x = pax, y = Total)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Passengers per Booking", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Arrivals to Paris by Passenger Bookings 2014 - 2018")
+
+```
+
+
+```{r Boxplot of Daily Arrivals by Passenger Bookings, echo=FALSE, fig.width=20, fig.height=5}
+
+hist_tt_y_pax <- subset(pdset_14_18, select = c("ppb_1pax", "ppb_2pax", "ppb_3pax", "ppb_4pax","ppb_5pax", "ppb_6to9pax", "ppb_10pl_pax", "Date"))
+names(hist_tt_y_pax) <- c("1 Passenger per Booking", "2 Passengers per Booking", "3 Passengers per Booking", "4 Passengers per Booking","5 Passengers per Booking", "6 to 9 Passengers per Booking", "10 Plus Passengers per", "Date")
+
+hist_tt_y_pax_melt <- melt(hist_tt_y_pax, id = "Date")
+
+p_hist_tt_y_pax_boxplot <- ggplot(hist_tt_y_pax_melt, aes(x = variable, y = value))+
+        geom_boxplot(alpha = 0) +
+        geom_jitter(alpha = 0.1, color = "tomato") +
+        theme_light() +
+        labs(x = "Passenger Bookings", y = "Daily Arrivals Volume") + 
+        ggtitle("Passengers per Booking of Chinese Arrivals to Paris by Daily Arrival Volume")
+ 
+```
+
+```{r Pax Plot barchart and boxplot, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot charts in grid
+plot_grid(p_hist_tt_pax_barchart + coord_flip(), p_hist_tt_y_pax_boxplot + coord_flip(), nrow = 1)
+
+```
+
+Paris seems to be a very popular tourism destination for one person bookings from China. While, a good portion of these can be singles traveling, we note that (as we will see in the next sections), Paris is an important business travel destination for Chinese as well. One person bookings represent around 30% of the total passengers for 2014 - 2018 period,  followed by 2 people bookings (which we believe is largely couples and they represent 21% of the bookings), third largest group is +10 people (20%) who are group travellers, another important source of tourists for Paris. 
+
+This is an important demographics information for DFS. The company should potentially do some market search on the type of products bought by single-leusire and business travelers, as well as couples in addition to research on group purchases, as these 3 categories represent over 70% of the Chinese travelers flying into Paris. 
+
+```{r Pax heatmap years , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by Passenger booking by year
+hist_tt_y_pax <- subset(pdset_14_18, select = c("ppb_1pax", "ppb_2pax", "ppb_3pax", "ppb_4pax","ppb_5pax", "ppb_6to9pax", "ppb_10pl_pax", "Year"))
+hist_tt_y_pax <- aggregate(hist_tt_y_pax, by = list(hist_tt_y_pax$Year), FUN = sum)
+drops <- c("Year")
+
+hist_tt_y_pax <- hist_tt_y_pax[ , !names(hist_tt_y_pax) %in% drops] 
+names(hist_tt_y_pax) <- c("Year","1 Passenger per Booking", "2 Passengers per Booking", "3 Passengers per Booking", "4 Passengers per Booking","5 Passengers per Booking", "6 to 9 Passengers per Booking", "10 Plus Passengers per")
+hist_tt_y_pax_melt <- melt(hist_tt_y_pax, id="Year")
+names(hist_tt_y_pax_melt) <- c("Year", "Passengers per Booking", "Value")
+
+hist_tt_y_pax_melt$Year <- as.factor(hist_tt_y_pax_melt$Year)
+
+p_hist_tt_y_pax_melt_heatmap <- ggplot(hist_tt_y_pax_melt, aes(x = hist_tt_y_pax_melt$Year, y = hist_tt_y_pax_melt$`Passengers per Booking`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Year", expand = c(0, 0)) +
+                                    scale_y_discrete("Passengers per Booking", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers per Booking of Chinese Arrivals to Paris by Year") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r Pax heatmap months , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by length of stay by month
+hist_tt_m_pax <- subset(pdset_14_18, select = c("ppb_1pax", "ppb_2pax", "ppb_3pax", "ppb_4pax","ppb_5pax", "ppb_6to9pax", "ppb_10pl_pax", "Month"))
+hist_tt_m_pax$Month <- as.integer(hist_tt_m_pax$Month)
+
+hist_tt_m_pax <- aggregate(hist_tt_m_pax, by = list(hist_tt_m_pax$Month), FUN = sum)
+drops <- c("Month")
+hist_tt_m_pax <- hist_tt_m_pax[ , !names(hist_tt_m_pax) %in% drops] 
+names(hist_tt_m_pax) <- c("Month", "1 Passenger per Booking", "2 Passengers per Booking", "3 Passengers per Booking", "4 Passengers per Booking","5 Passengers per Booking", "6 to 9 Passengers per Booking", "10 Plus Passengers per")
+hist_tt_m_pax_melt <- melt(hist_tt_m_pax, id="Month")
+names(hist_tt_m_pax_melt) <- c("Month","Passengers per Booking", "Value")
+
+hist_tt_m_pax_melt$Month <- as.factor(hist_tt_m_pax_melt$Month)
+
+p_hist_tt_m_pax_heatmap <- ggplot(hist_tt_m_pax_melt, aes(x = hist_tt_m_pax_melt$Month, y = hist_tt_m_pax_melt$`Passengers per Booking`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Month", expand = c(0, 0)) +
+                                    scale_y_discrete("Passengers per Booking", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers per Booking of Chinese Arrivals to Paris by Month") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r Pax Heatmaps plots, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot heatmaps
+plot_grid(p_hist_tt_y_pax_melt_heatmap, p_hist_tt_m_pax_heatmap, nrow = 2)
+
+```
+
+Given the important role of client demographics for DFS we wanted to look at the passengers per booking data in a bit more depth. 
+We first looked at the evolution of the categories on an annual basis between 2014 - 2018. As the heatmap shows, while most categories seem to be relatively stable, it is very easy to see a sharp decline in the caetgory for 10 plus passengers per booking. While this group currently represents about 20%, it has a visibly larger share of total tourists in 2014 and this category started a sharp decline in 2015 and since then it has not necessarily recovered. 
+
+We also looked at the passengers per booking data on a monthly basis. While most categories are relatively stable (from teh top number 2, 3, 4, and 5), the seasonality seems to be a way more pronounced for the most popular categories;   1 passenger, 2 passenger and + 10 passenger bookings. For single person and 2 person bookings the months of June, July and September are the most popular, whle july and august are the most popular months for the +10 person bookings. 
+
+This is a crucial data for DFS as it can play around with its inventory / product mix by taking into acccount the differing preferences of each category clientele. For example, in August, DFS can priorotize most popular items for group shoppers in its store, while in June and july it can try to cater more to single and couple clients. 
+
+```{r Change in Passengers per Booking by Year, echo=FALSE, fig.width=20, fig.height=5}
+
+# Select required rows from data frame 
+hist_tt_y_pax <- subset(pdset_14_18, select = c("ppb_1pax", "ppb_2pax", "ppb_3pax", "ppb_4pax","ppb_5pax", "ppb_6to9pax", "ppb_10pl_pax", "Year"))
+names(hist_tt_y_pax) <- c("1 Passenger per Booking", "2 Passengers per Booking", "3 Passengers per Booking", "4 Passengers per Booking","5 Passengers per Booking", "6 to 9 Passengers per Booking", "10 Plus Passengers per", "Year")
+
+hist_tt_y_pax <- aggregate(hist_tt_y_pax, by = list(hist_tt_y_pax$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_pax <- hist_tt_y_pax[ , !names(hist_tt_y_pax) %in% drops] 
+names(hist_tt_y_pax) <- c("Year", "1 Passenger per Booking", "2 Passengers per Booking", "3 Passengers per Booking", "4 Passengers per Booking","5 Passengers per Booking", "6 to 9 Passengers per Booking", "10 Plus Passengers per")
+hist_tt_y_pax_melt <- melt(hist_tt_y_pax, id="Year")
+
+# Transpose the data set
+hist_tt_y_pax_transpose <- data.frame(t(hist_tt_y_pax))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_pax_transpose) <- as.matrix(hist_tt_y_pax_transpose[1, ])
+hist_tt_y_pax_transpose <- hist_tt_y_pax_transpose[-1, ]
+hist_tt_y_pax_transpose[] <- lapply(hist_tt_y_pax_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_pax_transpose <- as.data.frame(hist_tt_y_pax_transpose)
+hist_tt_y_pax_transpose$pax <- rownames(hist_tt_y_pax_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_pax_transpose) <- NULL
+
+# Add delta column
+hist_tt_y_pax_transpose$delta <- hist_tt_y_pax_transpose$`2018` - hist_tt_y_pax_transpose$`2014`
+hist_tt_y_pax_transpose$delta2 <- hist_tt_y_pax_transpose$`2018` - hist_tt_y_pax_transpose$`2016`
+
+# Add levels to maintain order
+hist_tt_y_pax_transpose$pax <- factor(hist_tt_y_pax_transpose$pax, levels = hist_tt_y_pax_transpose$pax)
+
+# Create Delta chart
+p_hist_tt_y_pax_delta <- ggplot(data = hist_tt_y_pax_transpose, aes(x = pax, y = delta, label = delta)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `pax`, yend = delta, xend = `pax`), color =  "black") +
+                labs(x = "Passengers per Booking", y = "Delta Between 2018 and 2014") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Paris by Passengers per Booking 2014 to 2018") +
+                scale_y_continuous(labels = comma)
+
+p_hist_tt_y_pax_delta2 <- ggplot(data = hist_tt_y_pax_transpose, aes(x = pax, y = delta2, label = delta2)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `pax`, yend = delta2, xend = `pax`), color =  "black") +
+                labs(x = "Passengers per Booking", y = "Delta Between 2018 and 2016") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Paris by Passengers per Booking 2016 to 2018") +
+                scale_y_continuous(labels = comma)
+
+plot_grid(p_hist_tt_y_pax_delta + coord_flip(), p_hist_tt_y_pax_delta2 + coord_flip() , nrow = 1)
+
+```
+
+The delta analysis shows the acute decline in group bookings more clearly. Between 2014 - 2018 total decline in this group (+10 person per booking) was about 5,600, while decline between 2016 - 2018 is stronger at about 7,500. Clearly, this category continues to decline while singles and 2 person bookings continues to gain popularity. Single bookings increased by 4,850 between 2014 - 2018, but 8,700 between 2016 - 2018, showing that this category is really gaining momentum. Similarly, 2 person bookings are up by about 7,100 in teh same period and 3 passenger bookings are up by 4,200. 
+
+**Passengers per Booking Conclusions**
+
+Looking at the data, we believe the popularity of Paris as a destination for single and 2 person travelers are here to stay for the next few years, while the +10 person bookings continue to decline. 
+
+###2.2.4 Lead Times Analysis
+
+The forward keys data set allows us to assess arrivals by booking lead time
+
+```{r Volume of Arrivals by Lead time, echo=FALSE, fig.width=20, fig.height=5}
+
+# Inbound passengers by PaX Ex 2019
+# Select required rows from data frame 
+hist_tt_y_lead <- subset(pdset_14_18, select = c("LeadT_0to4days", "LeadT_5to14days", "LeadT_15to29days", "LeadT_30to44days","LeadT_45to59days", "LeadT_60to89days", "LeadT_90to119days", "LeadT_120to364days", "Year"))
+names(hist_tt_y_lead) <- c("0 to 4 Days", "5 to 14 Days", "15 to 29 Days", "30 to 44 Days","45 to 59 Days", "60 to 89 Days", "90 to 119 Days", "120 to 364 Days", "Year")
+
+hist_tt_y_lead <- aggregate(hist_tt_y_lead, by = list(hist_tt_y_lead$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_lead <- hist_tt_y_lead[ , !names(hist_tt_y_lead) %in% drops] 
+names(hist_tt_y_lead) <- c("Year","0 to 4 Days", "5 to 14 Days", "15 to 29 Days", "30 to 44 Days","45 to 59 Days", "60 to 89 Days", "90 to 119 Days", "120 to 364 Days")
+hist_tt_y_lead_melt <- melt(hist_tt_y_lead, id="Year")
+
+# Transpose the data set
+hist_tt_y_lead_transpose <- data.frame(t(hist_tt_y_lead))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_lead_transpose) <- as.matrix(hist_tt_y_lead_transpose[1, ])
+hist_tt_y_lead_transpose <- hist_tt_y_lead_transpose[-1, ]
+hist_tt_y_lead_transpose[] <- lapply(hist_tt_y_lead_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_lead_transpose <- as.data.frame(hist_tt_y_lead_transpose)
+hist_tt_y_lead_transpose$lead <- rownames(hist_tt_y_lead_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_lead_transpose) <- NULL
+
+
+# Add Total Row
+hist_tt_y_lead_transpose$Total <- hist_tt_y_lead_transpose$`2014` + 
+                                  hist_tt_y_lead_transpose$`2015` + 
+                                  hist_tt_y_lead_transpose$`2016` + 
+                                  hist_tt_y_lead_transpose$`2017` + 
+                                  hist_tt_y_lead_transpose$`2018`
+
+
+# Add levels to maintain order
+hist_tt_y_lead_transpose$lead <- factor(hist_tt_y_lead_transpose$lead, levels = hist_tt_y_lead_transpose$lead)
+
+p_hist_tt_lead_barchart <- ggplot(data = hist_tt_y_lead_transpose, aes(x = lead, y = Total)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Booking Lead Time", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Arrivals to Paris by Booking Lead Time 2014 - 2018")
+
+```
+
+
+```{r Boxplot of Daily Arrivals by Lead Time, echo=FALSE, fig.width=20, fig.height=5}
+
+hist_tt_y_lead <- subset(pdset_14_18, select = c("LeadT_0to4days", "LeadT_5to14days", "LeadT_15to29days", "LeadT_30to44days","LeadT_45to59days", "LeadT_60to89days", "LeadT_90to119days", "LeadT_120to364days", "Date"))
+names(hist_tt_y_lead) <- c("0 to 4 Days", "5 to 14 Days", "15 to 29 Days", "30 to 44 Days","45 to 59 Days", "60 to 89 Days", "90 to 119 Days", "120 to 364 Days", "Date")
+
+hist_tt_y_lead_melt <- melt(hist_tt_y_lead, id = "Date")
+
+p_hist_tt_y_lead_boxplot <- ggplot(hist_tt_y_lead_melt, aes(x = variable, y = value))+
+        geom_boxplot(alpha = 0) +
+        geom_jitter(alpha = 0.1, color = "tomato") +
+        theme_light() +
+        labs(x = "Booking Lead Time", y = "Daily Arrivals Volume") + 
+        ggtitle("Booking Lead Time of Chinese Arrivals to Paris by Daily Arrival Volume")
+
+
+```
+
+```{r Lead Plot barchart and boxplot, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot charts in grid
+plot_grid(p_hist_tt_lead_barchart + coord_flip(), p_hist_tt_y_lead_boxplot + coord_flip(), nrow = 1)
+
+```
+
+Data shows that about 18% of the travelers purchase their tickets between 120 to 364 days in advance, while the largest group is relatively last minute travelers who booked their tickets 15 - 29 days in advance, adding the 5 - 14 days category to this group, the total number of late travel planners reaches about 35% of of the total Chinese travelers traveling to Paris. 
+
+```{r Lead heatmap years , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by booking lead time by year
+hist_tt_y_lead <- subset(pdset_14_18, select = c("LeadT_0to4days", "LeadT_5to14days", "LeadT_15to29days", "LeadT_30to44days","LeadT_45to59days", "LeadT_60to89days", "LeadT_90to119days", "LeadT_120to364days", "Year"))
+hist_tt_y_lead <- aggregate(hist_tt_y_lead, by = list(hist_tt_y_lead$Year), FUN = sum)
+drops <- c("Year")
+
+hist_tt_y_lead <- hist_tt_y_lead[ , !names(hist_tt_y_lead) %in% drops] 
+names(hist_tt_y_lead) <- c("Year", "0 to 4 Days", "5 to 14 Days", "15 to 29 Days", "30 to 44 Days","45 to 59 Days", "60 to 89 Days", "90 to 119 Days", "120 to 364 Days")
+hist_tt_y_lead_melt <- melt(hist_tt_y_lead, id="Year")
+names(hist_tt_y_lead_melt) <- c("Year", "Booking Lead Time", "Value")
+
+hist_tt_y_lead_melt$Year <- as.factor(hist_tt_y_lead_melt$Year)
+
+p_hist_tt_y_lead_melt_heatmap <- ggplot(hist_tt_y_lead_melt, aes(x = hist_tt_y_lead_melt$Year, y = hist_tt_y_lead_melt$`Booking Lead Time`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Year", expand = c(0, 0)) +
+                                    scale_y_discrete("Booking Lead Time", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers per Booking Lead Time of Chinese Arrivals to Paris by Year") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r lead heatmap months , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by lead time by month
+hist_tt_m_lead <- subset(pdset_14_18, select = c("LeadT_0to4days", "LeadT_5to14days", "LeadT_15to29days", "LeadT_30to44days","LeadT_45to59days", "LeadT_60to89days", "LeadT_90to119days", "LeadT_120to364days", "Month"))
+hist_tt_m_lead$Month <- as.integer(hist_tt_m_lead$Month)
+
+hist_tt_m_lead <- aggregate(hist_tt_m_lead, by = list(hist_tt_m_lead$Month), FUN = sum)
+drops <- c("Month")
+hist_tt_m_lead <- hist_tt_m_lead[ , !names(hist_tt_m_lead) %in% drops] 
+names(hist_tt_m_lead) <- c("Month", "0 to 4 Days", "5 to 14 Days", "15 to 29 Days", "30 to 44 Days","45 to 59 Days", "60 to 89 Days", "90 to 119 Days", "120 to 364 Days")
+hist_tt_m_lead_melt <- melt(hist_tt_m_lead, id="Month")
+names(hist_tt_m_lead_melt) <- c("Month","Passengers per Booking", "Value")
+
+hist_tt_m_lead_melt$Month <- as.factor(hist_tt_m_lead_melt$Month)
+
+p_hist_tt_m_lead_heatmap <- ggplot(hist_tt_m_lead_melt, aes(x = hist_tt_m_lead_melt$Month, y = hist_tt_m_lead_melt$`Passengers per Booking`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Month", expand = c(0, 0)) +
+                                    scale_y_discrete("Passengers per Booking", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers per Booking of Chinese Arrivals to Paris by Month") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r lead Heatmaps plots, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot heatmaps
+plot_grid(p_hist_tt_y_lead_melt_heatmap, p_hist_tt_m_lead_heatmap, nrow = 2)
+
+```
+
+Looking at the evolution of booking lead time over the past 4 yeras, we can see that the early planners (120 - 364 days) declined visibly, while there were relativel limited movements in other categories. Looking at the monthly data, we can see some seasonality in relatively late bookings where there is some pickup dring June, July and September. Similarly, july and augst seem to be the most popular months for early planners (120 to 364 days) as well. 
+
+```{r Change in Booking Lead Time by Year, echo=FALSE, fig.width=20, fig.height=5}
+
+# Select required rows from data frame 
+hist_tt_y_lead <- subset(pdset_14_18, select = c("LeadT_0to4days", "LeadT_5to14days", "LeadT_15to29days", "LeadT_30to44days","LeadT_45to59days", "LeadT_60to89days", "LeadT_90to119days", "LeadT_120to364days", "Year"))
+names(hist_tt_y_lead) <- c("0 to 4 Days", "5 to 14 Days", "15 to 29 Days", "30 to 44 Days","45 to 59 Days", "60 to 89 Days", "90 to 119 Days", "120 to 364 Days", "Year")
+
+hist_tt_y_lead <- aggregate(hist_tt_y_lead, by = list(hist_tt_y_lead$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_lead <- hist_tt_y_lead[ , !names(hist_tt_y_lead) %in% drops] 
+names(hist_tt_y_lead) <- c("Year","0 to 4 Days", "5 to 14 Days", "15 to 29 Days", "30 to 44 Days","45 to 59 Days", "60 to 89 Days", "90 to 119 Days", "120 to 364 Days")
+hist_tt_y_lead_melt <- melt(hist_tt_y_lead, id="Year")
+
+# Transpose the data set
+hist_tt_y_lead_transpose <- data.frame(t(hist_tt_y_lead))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_lead_transpose) <- as.matrix(hist_tt_y_lead_transpose[1, ])
+hist_tt_y_lead_transpose <- hist_tt_y_lead_transpose[-1, ]
+hist_tt_y_lead_transpose[] <- lapply(hist_tt_y_lead_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_lead_transpose <- as.data.frame(hist_tt_y_lead_transpose)
+hist_tt_y_lead_transpose$lead <- rownames(hist_tt_y_lead_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_lead_transpose) <- NULL
+
+# Add delta column
+hist_tt_y_lead_transpose$delta <- hist_tt_y_lead_transpose$`2018` - hist_tt_y_lead_transpose$`2014`
+hist_tt_y_lead_transpose$delta2 <- hist_tt_y_lead_transpose$`2018` - hist_tt_y_lead_transpose$`2016`
+
+# Add levels to maintain order
+hist_tt_y_lead_transpose$lead <- factor(hist_tt_y_lead_transpose$lead, levels = hist_tt_y_lead_transpose$lead)
+
+# Create Delta chart
+p_hist_tt_y_lead_delta <- ggplot(data = hist_tt_y_lead_transpose, aes(x = lead, y = delta, label = delta)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `lead`, yend = delta, xend = `lead`), color =  "black") +
+                labs(x = "Booking Lead Time", y = "Delta Between 2018 and 2014") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Paris by Booking Lead Time 2014 to 2018") +
+                scale_y_continuous(labels = comma)
+
+p_hist_tt_y_lead_delta2 <- ggplot(data = hist_tt_y_lead_transpose, aes(x = lead, y = delta2, label = delta2)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `lead`, yend = delta2, xend = `lead`), color =  "black") +
+                labs(x = "Booking Lead Time", y = "Delta Between 2018 and 2016") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Paris by Booking Lead Time 2016 to 2018") +
+                scale_y_continuous(labels = comma)
+
+plot_grid(p_hist_tt_y_lead_delta + coord_flip(), p_hist_tt_y_lead_delta2 + coord_flip(), nrow = 1)
+
+```
+
+Delta analysis further  confirms the decline in the early planners (120 to 364 days), while the trends for other categories in recent years (20156 - 2018) seem to be visibly positive. One other category that stands out is the 0 to 4 days where around 1,400 decline was registered in 2016 - 2018, however this is a very small portion of the total passenger data. 
+
+**Booking Lead Time Conclusions**
+
+Booking lead time shows that about 35% of the population prucases their ticket relatively late (within one month). While the remaining categories are relaively balanced, the seond largest group is the early purchasers as discussed earlier. 
+
+
+###2.2.5 Cabins Analysis
+
+The forward keys data set allows us to assess arrivals by Cabin Type
+
+```{r Volume of Arrivals by Cabin, echo=FALSE, fig.width=20, fig.height=5}
+
+# Inbound passengers by PaX Ex 2019
+# Select required rows from data frame 
+hist_tt_y_cabin <- subset(pdset_14_18, select = c("Cabin_Economy", "Cabin_EconomyPremium", "Cabin_Business", "Cabin_First", "Year"))
+names(hist_tt_y_cabin) <- c("Economy", "Premium Economy", "Business", "First", "Year")
+
+hist_tt_y_cabin <- aggregate(hist_tt_y_cabin, by = list(hist_tt_y_cabin$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_cabin <- hist_tt_y_cabin[ , !names(hist_tt_y_cabin) %in% drops] 
+names(hist_tt_y_cabin) <- c("Year", "Economy", "Premium Economy", "Business", "First")
+hist_tt_y_cabin_melt <- melt(hist_tt_y_cabin, id="Year")
+
+# Transpose the data set
+hist_tt_y_cabin_transpose <- data.frame(t(hist_tt_y_cabin))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_cabin_transpose) <- as.matrix(hist_tt_y_cabin_transpose[1, ])
+hist_tt_y_cabin_transpose <- hist_tt_y_cabin_transpose[-1, ]
+hist_tt_y_cabin_transpose[] <- lapply(hist_tt_y_cabin_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_cabin_transpose <- as.data.frame(hist_tt_y_cabin_transpose)
+hist_tt_y_cabin_transpose$cabin <- rownames(hist_tt_y_cabin_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_cabin_transpose) <- NULL
+
+
+# Add Total Row
+hist_tt_y_cabin_transpose$Total <- hist_tt_y_cabin_transpose$`2014` + 
+                                  hist_tt_y_cabin_transpose$`2015` + 
+                                  hist_tt_y_cabin_transpose$`2016` + 
+                                  hist_tt_y_cabin_transpose$`2017` + 
+                                  hist_tt_y_cabin_transpose$`2018`
+
+
+# Add levels to maintain order
+hist_tt_y_cabin_transpose$cabin <- factor(hist_tt_y_cabin_transpose$cabin, levels = hist_tt_y_cabin_transpose$cabin)
+
+p_hist_tt_cabin_barchart <- ggplot(data = hist_tt_y_cabin_transpose, aes(x = cabin, y = Total)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Cabin Type", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Arrivals to Paris by Cabin Type 2014 - 2018")
+
+
+```
+
+
+```{r Boxplot of Daily Arrivals by Cabin, echo=FALSE, fig.width=20, fig.height=5}
+
+hist_tt_y_cabin <- subset(pdset_14_18, select = c("Cabin_Economy", "Cabin_EconomyPremium", "Cabin_Business", "Cabin_First", "Date"))
+names(hist_tt_y_cabin) <- c("Economy", "Premium Economy", "Business", "First", "Date")
+
+hist_tt_y_cabin_melt <- melt(hist_tt_y_cabin, id = "Date")
+
+p_hist_tt_y_cabin_boxplot <- ggplot(hist_tt_y_cabin_melt, aes(x = variable, y = value))+
+        geom_boxplot(alpha = 0) +
+        geom_jitter(alpha = 0.1, color = "tomato") +
+        theme_light() +
+        labs(x = "Cabin Type", y = "Daily Arrivals Volume") + 
+        ggtitle("Cabin Type of Chinese Arrivals to Paris by Daily Arrival Volume")
+
+
+```
+
+```{r Cabin Plot barchart and boxplot, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot charts in grid
+plot_grid(p_hist_tt_cabin_barchart + coord_flip(), p_hist_tt_y_cabin_boxplot + coord_flip(), nrow = 1)
+
+```
+
+Economy class passengers represented about 85% of the total passengers while business passengers is about 10% of Chinese passengers traveling to Paris. This is pretty at much at par with many international destinations.  
+
+```{r cabin heatmap years , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by booking cabin time by year
+hist_tt_y_cabin <- subset(pdset_14_18, select = c("Cabin_Economy", "Cabin_EconomyPremium", "Cabin_Business", "Cabin_First", "Year"))
+hist_tt_y_cabin <- aggregate(hist_tt_y_cabin, by = list(hist_tt_y_cabin$Year), FUN = sum)
+drops <- c("Year")
+
+hist_tt_y_cabin <- hist_tt_y_cabin[ , !names(hist_tt_y_cabin) %in% drops] 
+names(hist_tt_y_cabin) <- c("Year", "Economy", "Premium Economy", "Business", "First")
+hist_tt_y_cabin_melt <- melt(hist_tt_y_cabin, id="Year")
+names(hist_tt_y_cabin_melt) <- c("Year", "Cabin Type", "Value")
+
+hist_tt_y_cabin_melt$Year <- as.factor(hist_tt_y_cabin_melt$Year)
+
+p_hist_tt_y_cabin_melt_heatmap <- ggplot(hist_tt_y_cabin_melt, aes(x = hist_tt_y_cabin_melt$Year, y = hist_tt_y_cabin_melt$`Cabin Type`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Year", expand = c(0, 0)) +
+                                    scale_y_discrete("Cabin Type", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers by Cabin Type of Chinese Arrivals to Paris by Year") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r cabin heatmap months , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by cabin type by month
+hist_tt_m_cabin <- subset(pdset_14_18, select = c("Cabin_Economy", "Cabin_EconomyPremium", "Cabin_Business", "Cabin_First", "Month"))
+hist_tt_m_cabin$Month <- as.integer(hist_tt_m_cabin$Month)
+
+hist_tt_m_cabin <- aggregate(hist_tt_m_cabin, by = list(hist_tt_m_cabin$Month), FUN = sum)
+drops <- c("Month")
+hist_tt_m_cabin <- hist_tt_m_cabin[ , !names(hist_tt_m_cabin) %in% drops] 
+names(hist_tt_m_cabin) <- c("Month", "Economy", "Premium Economy", "Business", "First")
+hist_tt_m_cabin_melt <- melt(hist_tt_m_cabin, id="Month")
+names(hist_tt_m_cabin_melt) <- c("Month","Cabin Type", "Value")
+
+hist_tt_m_cabin_melt$Month <- as.factor(hist_tt_m_cabin_melt$Month)
+
+p_hist_tt_m_cabin_heatmap <- ggplot(hist_tt_m_cabin_melt, aes(x = hist_tt_m_cabin_melt$Month, y = hist_tt_m_cabin_melt$`Cabin Type`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Month", expand = c(0, 0)) +
+                                    scale_y_discrete("Cabin Type", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers by Cabin Type of Chinese Arrivals to Paris by Month") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r cabin Heatmaps plots, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot heatmaps
+plot_grid(p_hist_tt_y_cabin_melt_heatmap, p_hist_tt_m_cabin_heatmap, nrow = 2)
+
+```
+
+The annual statistics show that the cabin preferences of Chinese passengers to Paris (as expected) are quite stable, we dont see any emerging trends there. We also looked at the data on a montly basis, there seems to be some level of increased economy class activity in the summer months, particularly July, which we believe is at par with the increased levels of arrivals during the summer months. 
+
+```{r Change in cabin by Year, echo=FALSE, fig.width=20, fig.height=5}
+
+# Select required rows from data frame 
+hist_tt_y_cabin <- subset(pdset_14_18, select = c("Cabin_Economy", "Cabin_EconomyPremium", "Cabin_Business", "Cabin_First", "Year"))
+names(hist_tt_y_cabin) <- c("Economy", "Premium Economy", "Business", "First", "Year")
+
+hist_tt_y_cabin <- aggregate(hist_tt_y_cabin, by = list(hist_tt_y_cabin$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_cabin <- hist_tt_y_cabin[ , !names(hist_tt_y_cabin) %in% drops] 
+names(hist_tt_y_cabin) <- c("Year", "Economy", "Premium Economy", "Business", "First")
+hist_tt_y_cabin_melt <- melt(hist_tt_y_cabin, id="Year")
+
+# Transpose the data set
+hist_tt_y_cabin_transpose <- data.frame(t(hist_tt_y_cabin))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_cabin_transpose) <- as.matrix(hist_tt_y_cabin_transpose[1, ])
+hist_tt_y_cabin_transpose <- hist_tt_y_cabin_transpose[-1, ]
+hist_tt_y_cabin_transpose[] <- lapply(hist_tt_y_cabin_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_cabin_transpose <- as.data.frame(hist_tt_y_cabin_transpose)
+hist_tt_y_cabin_transpose$cabin <- rownames(hist_tt_y_cabin_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_cabin_transpose) <- NULL
+
+# Add delta column
+hist_tt_y_cabin_transpose$delta <- hist_tt_y_cabin_transpose$`2018` - hist_tt_y_cabin_transpose$`2014`
+hist_tt_y_cabin_transpose$delta2 <- hist_tt_y_cabin_transpose$`2018` - hist_tt_y_cabin_transpose$`2016`
+
+# Add levels to maintain order
+hist_tt_y_cabin_transpose$cabin <- factor(hist_tt_y_cabin_transpose$cabin, levels = hist_tt_y_cabin_transpose$cabin)
+
+# Create Delta chart
+p_hist_tt_y_cabin_delta <- ggplot(data = hist_tt_y_cabin_transpose, aes(x = cabin, y = delta, label = delta)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `cabin`, yend = delta, xend = `cabin`), color =  "black") +
+                labs(x = "Cabin Type", y = "Delta Between 2018 and 2014") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Paris by Cabin Type 2014 to 2018") +
+                scale_y_continuous(labels = comma)
+
+p_hist_tt_y_cabin_delta2 <- ggplot(data = hist_tt_y_cabin_transpose, aes(x = cabin, y = delta2, label = delta2)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `cabin`, yend = delta2, xend = `cabin`), color =  "black") +
+                labs(x = "Cabin Type", y = "Delta Between 2018 and 2016") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Paris by Cabin Type 2016 to 2018") +
+                scale_y_continuous(labels = comma)
+
+plot_grid(p_hist_tt_y_cabin_delta + coord_flip(), p_hist_tt_y_cabin_delta2 + coord_flip(), nrow = 1)
+
+```
+
+Delta analysis shows a relatively balanced level of increase among different cabin types between 2016 - 2018. 
+
+**Cabin Type Conclusions**
+
+We dont see particularly valuable insights from the cabin data. Similar to most destinations about 85% of the tickets are economy and there is very limited (if any) movements across different years and limited monthly variation. 
+
+
+###2.2.6 Distribution Channels Analysis
+
+The forward keys data set allows us to assess arrivals by Distribution Channels
+
+```{r Volume of Arrivals by distribution, echo=FALSE, fig.width=20, fig.height=5}
+
+# Inbound passengers by PaX Ex 2019
+# Select required rows from data frame 
+hist_tt_y_distribution <- subset(pdset_14_18, select = c("DistCh_OnlineTA", "DistCh_CorporateTA", "DistCh_RetailTA", "DistCh_OtherTA", "Year"))
+names(hist_tt_y_distribution) <- c("Online", "Corporate", "Retail", "Other", "Year")
+
+hist_tt_y_distribution <- aggregate(hist_tt_y_distribution, by = list(hist_tt_y_distribution$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_distribution <- hist_tt_y_distribution[ , !names(hist_tt_y_distribution) %in% drops] 
+names(hist_tt_y_distribution) <- c("Year", "Online", "Corporate", "Retail", "Other")
+hist_tt_y_distribution_melt <- melt(hist_tt_y_distribution, id="Year")
+
+# Transpose the data set
+hist_tt_y_distribution_transpose <- data.frame(t(hist_tt_y_distribution))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_distribution_transpose) <- as.matrix(hist_tt_y_distribution_transpose[1, ])
+hist_tt_y_distribution_transpose <- hist_tt_y_distribution_transpose[-1, ]
+hist_tt_y_distribution_transpose[] <- lapply(hist_tt_y_distribution_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_distribution_transpose <- as.data.frame(hist_tt_y_distribution_transpose)
+hist_tt_y_distribution_transpose$distribution <- rownames(hist_tt_y_distribution_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_distribution_transpose) <- NULL
+
+
+# Add Total Row
+hist_tt_y_distribution_transpose$Total <- hist_tt_y_distribution_transpose$`2014` + 
+                                  hist_tt_y_distribution_transpose$`2015` + 
+                                  hist_tt_y_distribution_transpose$`2016` + 
+                                  hist_tt_y_distribution_transpose$`2017` + 
+                                  hist_tt_y_distribution_transpose$`2018`
+
+
+# Add levels to maintain order
+hist_tt_y_distribution_transpose$distribution <- factor(hist_tt_y_distribution_transpose$distribution, levels = hist_tt_y_distribution_transpose$distribution)
+
+p_hist_tt_distribution_barchart <- ggplot(data = hist_tt_y_distribution_transpose, aes(x = distribution, y = Total)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Distribution Type", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Arrivals to Paris by Distribution Type 2014 - 2018")
+
+
+```
+
+
+```{r Boxplot of Daily Arrivals by distribution, echo=FALSE, fig.width=20, fig.height=5}
+
+hist_tt_y_distribution <- subset(pdset_14_18, select = c("DistCh_OnlineTA", "DistCh_CorporateTA", "DistCh_RetailTA", "DistCh_OtherTA", "Date"))
+names(hist_tt_y_distribution) <- c("Online", "Corporate", "Retail", "Other", "Date")
+
+hist_tt_y_distribution_melt <- melt(hist_tt_y_distribution, id = "Date")
+
+p_hist_tt_y_distribution_boxplot <- ggplot(hist_tt_y_distribution_melt, aes(x = variable, y = value))+
+        geom_boxplot(alpha = 0) +
+        geom_jitter(alpha = 0.1, color = "tomato") +
+        theme_light() +
+        labs(x = "Distribution Type", y = "Daily Arrivals Volume") + 
+        ggtitle("Distribution Type of Chinese Arrivals to Paris by Daily Arrival Volume")
+
+
+```
+
+
+```{r distribution Plot barchart and boxplot, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot charts in grid
+plot_grid(p_hist_tt_distribution_barchart + coord_flip(), p_hist_tt_y_distribution_boxplot + coord_flip(), nrow = 1)
+
+```
+
+Bookings via retail represent close to 70% of the bookings, while corporate bookings and online bookings each represent about 13% of the total bookings. 
+
+```{r distribution heatmap years , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by booking distribution time by year
+hist_tt_y_distribution <- subset(pdset_14_18, select = c("DistCh_OnlineTA", "DistCh_CorporateTA", "DistCh_RetailTA", "DistCh_OtherTA", "Year"))
+hist_tt_y_distribution <- aggregate(hist_tt_y_distribution, by = list(hist_tt_y_distribution$Year), FUN = sum)
+drops <- c("Year")
+
+hist_tt_y_distribution <- hist_tt_y_distribution[ , !names(hist_tt_y_distribution) %in% drops] 
+names(hist_tt_y_distribution) <- c("Year", "Online", "Corporate", "Retail", "Other")
+hist_tt_y_distribution_melt <- melt(hist_tt_y_distribution, id="Year")
+names(hist_tt_y_distribution_melt) <- c("Year", "distribution Type", "Value")
+
+hist_tt_y_distribution_melt$Year <- as.factor(hist_tt_y_distribution_melt$Year)
+
+p_hist_tt_y_distribution_melt_heatmap <- ggplot(hist_tt_y_distribution_melt, aes(x = hist_tt_y_distribution_melt$Year, y = hist_tt_y_distribution_melt$`distribution Type`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Year", expand = c(0, 0)) +
+                                    scale_y_discrete("Distribution Type", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers by Distribution Type of Chinese Arrivals to Paris by Year") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r distribution heatmap months , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by distribution channel by month
+hist_tt_m_distribution <- subset(pdset_14_18, select = c("DistCh_OnlineTA", "DistCh_CorporateTA", "DistCh_RetailTA", "DistCh_OtherTA", "Month"))
+hist_tt_m_distribution$Month <- as.integer(hist_tt_m_distribution$Month)
+
+hist_tt_m_distribution <- aggregate(hist_tt_m_distribution, by = list(hist_tt_m_distribution$Month), FUN = sum)
+drops <- c("Month")
+hist_tt_m_distribution <- hist_tt_m_distribution[ , !names(hist_tt_m_distribution) %in% drops] 
+names(hist_tt_m_distribution) <- c("Month", "Online", "Corporate", "Retail", "Other")
+hist_tt_m_distribution_melt <- melt(hist_tt_m_distribution, id="Month")
+names(hist_tt_m_distribution_melt) <- c("Month","distribution Type", "Value")
+
+hist_tt_m_distribution_melt$Month <- as.factor(hist_tt_m_distribution_melt$Month)
+
+p_hist_tt_m_distribution_heatmap <- ggplot(hist_tt_m_distribution_melt, aes(x = hist_tt_m_distribution_melt$Month, y = hist_tt_m_distribution_melt$`distribution Type`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Month", expand = c(0, 0)) +
+                                    scale_y_discrete("Distribution Type", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers by Distribution Type of Chinese Arrivals to Paris by Month") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r distribution Heatmaps plots, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot heatmaps
+plot_grid(p_hist_tt_y_distribution_melt_heatmap, p_hist_tt_m_distribution_heatmap, nrow = 2)
+
+```
+
+Heatmaps (annual evoluation and monthly variations) provide very limited additional insights. The retail bookings increase during the summer months in line with the overall tourism demand and reach its peak in July. 
+
+```{r Change in distribution by Year, echo=FALSE, fig.width=20, fig.height=5}
+
+# Select required rows from data frame 
+hist_tt_y_distribution <- subset(pdset_14_18, select = c("DistCh_OnlineTA", "DistCh_CorporateTA", "DistCh_RetailTA", "DistCh_OtherTA", "Year"))
+names(hist_tt_y_distribution) <- c("Online", "Corporate", "Retail", "Other", "Year")
+
+hist_tt_y_distribution <- aggregate(hist_tt_y_distribution, by = list(hist_tt_y_distribution$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_distribution <- hist_tt_y_distribution[ , !names(hist_tt_y_distribution) %in% drops] 
+names(hist_tt_y_distribution) <- c("Year", "Online", "Corporate", "Retail", "Other")
+hist_tt_y_distribution_melt <- melt(hist_tt_y_distribution, id="Year")
+
+# Transpose the data set
+hist_tt_y_distribution_transpose <- data.frame(t(hist_tt_y_distribution))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_distribution_transpose) <- as.matrix(hist_tt_y_distribution_transpose[1, ])
+hist_tt_y_distribution_transpose <- hist_tt_y_distribution_transpose[-1, ]
+hist_tt_y_distribution_transpose[] <- lapply(hist_tt_y_distribution_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_distribution_transpose <- as.data.frame(hist_tt_y_distribution_transpose)
+hist_tt_y_distribution_transpose$distribution <- rownames(hist_tt_y_distribution_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_distribution_transpose) <- NULL
+
+# Add delta column
+hist_tt_y_distribution_transpose$delta <- hist_tt_y_distribution_transpose$`2018` - hist_tt_y_distribution_transpose$`2014`
+hist_tt_y_distribution_transpose$delta2 <- hist_tt_y_distribution_transpose$`2018` - hist_tt_y_distribution_transpose$`2016`
+
+# Add levels to maintain order
+hist_tt_y_distribution_transpose$distribution <- factor(hist_tt_y_distribution_transpose$distribution, levels = hist_tt_y_distribution_transpose$distribution)
+
+# Create Delta chart
+p_hist_tt_y_distribution_delta <- ggplot(data = hist_tt_y_distribution_transpose, aes(x = distribution, y = delta, label = delta)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `distribution`, yend = delta, xend = `distribution`), color =  "black") +
+                labs(x = "Distribution Type", y = "Delta Between 2018 and 2014") + 
+                ggtitle("Delta in Chinese Passenger Arrivals by Distribution Type 2014 to 2018") +
+                scale_y_continuous(labels = comma)
+
+p_hist_tt_y_distribution_delta2 <- ggplot(data = hist_tt_y_distribution_transpose, aes(x = distribution, y = delta2, label = delta2)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `distribution`, yend = delta2, xend = `distribution`), color =  "black") +
+                labs(x = "Distribution Type", y = "Delta Between 2018 and 2016") + 
+                ggtitle("Delta in Chinese Passenger Arrivals by Distribution Type 2016 to 2018") +
+                scale_y_continuous(labels = comma)
+
+plot_grid(p_hist_tt_y_distribution_delta + coord_flip(), p_hist_tt_y_distribution_delta2 + coord_flip(), nrow = 1)
+
+```
+
+Delta analysis shows that retail bookings have increased visibly at the expense of other categories over the past few years. It is particularly interesting to see the decline in online bookings. 
+
+**Distribution Type Conclusions**
+
+Retail bookings are a key source of bookings and are gaining further popularity. 
+
+###2.2.7 Multicity Ticket Type Analysis
+
+The forward keys data set allows us to assess arrivals by Return or Multicity ticket type analysis
+
+```{r Volume of Arrivals by multicity, echo=FALSE, fig.width=20, fig.height=5}
+
+# Inbound passengers by PaX Ex 2019
+# Select required rows from data frame 
+hist_tt_y_multicity <- subset(pdset_14_18, select = c("OneRet_Oneway", "OneRet_Return", "OneRet_MultiCity", "Year"))
+names(hist_tt_y_multicity) <- c("Oneway", "Return", "Multicity", "Year")
+
+hist_tt_y_multicity <- aggregate(hist_tt_y_multicity, by = list(hist_tt_y_multicity$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_multicity <- hist_tt_y_multicity[ , !names(hist_tt_y_multicity) %in% drops] 
+names(hist_tt_y_multicity) <- c("Year", "Oneway", "Return", "Multicity")
+hist_tt_y_multicity_melt <- melt(hist_tt_y_multicity, id="Year")
+
+# Transpose the data set
+hist_tt_y_multicity_transpose <- data.frame(t(hist_tt_y_multicity))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_multicity_transpose) <- as.matrix(hist_tt_y_multicity_transpose[1, ])
+hist_tt_y_multicity_transpose <- hist_tt_y_multicity_transpose[-1, ]
+hist_tt_y_multicity_transpose[] <- lapply(hist_tt_y_multicity_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_multicity_transpose <- as.data.frame(hist_tt_y_multicity_transpose)
+hist_tt_y_multicity_transpose$multicity <- rownames(hist_tt_y_multicity_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_multicity_transpose) <- NULL
+
+
+# Add Total Row
+hist_tt_y_multicity_transpose$Total <- hist_tt_y_multicity_transpose$`2014` + 
+                                  hist_tt_y_multicity_transpose$`2015` + 
+                                  hist_tt_y_multicity_transpose$`2016` + 
+                                  hist_tt_y_multicity_transpose$`2017` + 
+                                  hist_tt_y_multicity_transpose$`2018`
+
+
+# Add levels to maintain order
+hist_tt_y_multicity_transpose$multicity <- factor(hist_tt_y_multicity_transpose$multicity, levels = hist_tt_y_multicity_transpose$multicity)
+
+p_hist_tt_multicity_barchart <- ggplot(data = hist_tt_y_multicity_transpose, aes(x = multicity, y = Total)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Multicity Ticket Type", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Arrivals to Paris by Multicity Ticket Type Type 2014 - 2018")
+
+
+```
+
+
+```{r Boxplot of Daily Arrivals by multicity, echo=FALSE, fig.width=20, fig.height=5}
+
+hist_tt_y_multicity <- subset(pdset_14_18, select = c("OneRet_Oneway", "OneRet_Return", "OneRet_MultiCity", "Date"))
+names(hist_tt_y_multicity) <- c("Oneway", "Return", "Multicity", "Date")
+
+hist_tt_y_multicity_melt <- melt(hist_tt_y_multicity, id = "Date")
+
+p_hist_tt_y_multicity_boxplot <- ggplot(hist_tt_y_multicity_melt, aes(x = variable, y = value))+
+        geom_boxplot(alpha = 0) +
+        geom_jitter(alpha = 0.1, color = "tomato") +
+        theme_light() +
+        labs(x = "Multicity Ticket Type", y = "Daily Arrivals Volume") + 
+        ggtitle("Multicity Ticket Type of Chinese Arrivals to Paris by Daily Arrival Volume")
+
+
+```
+
+
+```{r multicity Plot barchart and boxplot, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot charts in grid
+plot_grid(p_hist_tt_multicity_barchart + coord_flip(), p_hist_tt_y_multicity_boxplot + coord_flip(), nrow = 1)
+
+```
+
+63% of the passengers traveling into Paris are multicity travelers, going to another destination after Paris. This is not surprising as Paris is an aviation hub for Continental Europe. Return flights represent the remaining 37%. 
+
+```{r multicity heatmap years , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by booking multicity time by year
+hist_tt_y_multicity <- subset(pdset_14_18, select = c("OneRet_Oneway", "OneRet_Return", "OneRet_MultiCity", "Year"))
+hist_tt_y_multicity <- aggregate(hist_tt_y_multicity, by = list(hist_tt_y_multicity$Year), FUN = sum)
+drops <- c("Year")
+
+hist_tt_y_multicity <- hist_tt_y_multicity[ , !names(hist_tt_y_multicity) %in% drops] 
+names(hist_tt_y_multicity) <- c("Year", "Oneway", "Return", "Multicity")
+hist_tt_y_multicity_melt <- melt(hist_tt_y_multicity, id="Year")
+names(hist_tt_y_multicity_melt) <- c("Year", "multicity Type", "Value")
+
+hist_tt_y_multicity_melt$Year <- as.factor(hist_tt_y_multicity_melt$Year)
+
+p_hist_tt_y_multicity_melt_heatmap <- ggplot(hist_tt_y_multicity_melt, aes(x = hist_tt_y_multicity_melt$Year, y = hist_tt_y_multicity_melt$`multicity Type`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Year", expand = c(0, 0)) +
+                                    scale_y_discrete("Multicity Ticket Type", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers by Multicity Ticket Type of Chinese Arrivals to Paris by Year") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r multicity heatmap months , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by multicity ticket type by month
+hist_tt_m_multicity <- subset(pdset_14_18, select = c("OneRet_Oneway", "OneRet_Return", "OneRet_MultiCity", "Month"))
+hist_tt_m_multicity$Month <- as.integer(hist_tt_m_multicity$Month)
+
+hist_tt_m_multicity <- aggregate(hist_tt_m_multicity, by = list(hist_tt_m_multicity$Month), FUN = sum)
+drops <- c("Month")
+hist_tt_m_multicity <- hist_tt_m_multicity[ , !names(hist_tt_m_multicity) %in% drops] 
+names(hist_tt_m_multicity) <- c("Month", "Oneway", "Return", "Multicity")
+hist_tt_m_multicity_melt <- melt(hist_tt_m_multicity, id="Month")
+names(hist_tt_m_multicity_melt) <- c("Month","multicity Type", "Value")
+
+hist_tt_m_multicity_melt$Month <- as.factor(hist_tt_m_multicity_melt$Month)
+
+p_hist_tt_m_multicity_heatmap <- ggplot(hist_tt_m_multicity_melt, aes(x = hist_tt_m_multicity_melt$Month, y = hist_tt_m_multicity_melt$`multicity Type`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Month", expand = c(0, 0)) +
+                                    scale_y_discrete("Multicity Ticket Type", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers by Multicity Ticket Type of Chinese Arrivals to Paris by Month") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r multicity Heatmaps plots, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot heatmaps
+plot_grid(p_hist_tt_y_multicity_melt_heatmap, p_hist_tt_m_multicity_heatmap, nrow = 2)
+
+```
+
+Data shows that after 2015, there was some decline in multicity flights, while the stats have been fairly stable over the past few years. The summer months of July and August show increased level of multicity flights which we believe is at par with the general increased level of touristic flights. 
+
+
+```{r Change in multicity by Year, echo=FALSE, fig.width=20, fig.height=5}
+
+# Select required rows from data frame 
+hist_tt_y_multicity <- subset(pdset_14_18, select = c("OneRet_Oneway", "OneRet_Return", "OneRet_MultiCity", "Year"))
+names(hist_tt_y_multicity) <- c("Oneway", "Return", "Multicity", "Year")
+
+hist_tt_y_multicity <- aggregate(hist_tt_y_multicity, by = list(hist_tt_y_multicity$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_multicity <- hist_tt_y_multicity[ , !names(hist_tt_y_multicity) %in% drops] 
+names(hist_tt_y_multicity) <- c("Year", "Oneway", "Return", "Multicity")
+hist_tt_y_multicity_melt <- melt(hist_tt_y_multicity, id="Year")
+
+# Transpose the data set
+hist_tt_y_multicity_transpose <- data.frame(t(hist_tt_y_multicity))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_multicity_transpose) <- as.matrix(hist_tt_y_multicity_transpose[1, ])
+hist_tt_y_multicity_transpose <- hist_tt_y_multicity_transpose[-1, ]
+hist_tt_y_multicity_transpose[] <- lapply(hist_tt_y_multicity_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_multicity_transpose <- as.data.frame(hist_tt_y_multicity_transpose)
+hist_tt_y_multicity_transpose$multicity <- rownames(hist_tt_y_multicity_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_multicity_transpose) <- NULL
+
+# Add delta column
+hist_tt_y_multicity_transpose$delta <- hist_tt_y_multicity_transpose$`2018` - hist_tt_y_multicity_transpose$`2014`
+hist_tt_y_multicity_transpose$delta2 <- hist_tt_y_multicity_transpose$`2018` - hist_tt_y_multicity_transpose$`2016`
+
+# Add levels to maintain order
+hist_tt_y_multicity_transpose$multicity <- factor(hist_tt_y_multicity_transpose$multicity, levels = hist_tt_y_multicity_transpose$multicity)
+
+# Create Delta chart
+p_hist_tt_y_multicity_delta <- ggplot(data = hist_tt_y_multicity_transpose, aes(x = multicity, y = delta, label = delta)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `multicity`, yend = delta, xend = `multicity`), color =  "black") +
+                labs(x = "Multicity Ticket Type", y = "Delta Between 2018 and 2014") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Paris by Multicity Ticket Type 2014 to 2018") +
+                scale_y_continuous(labels = comma)
+
+p_hist_tt_y_multicity_delta2 <- ggplot(data = hist_tt_y_multicity_transpose, aes(x = multicity, y = delta2, label = delta2)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `multicity`, yend = delta2, xend = `multicity`), color =  "black") +
+                labs(x = "Multicity Ticket Type", y = "Delta Between 2018 and 2016") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Paris by Multicity Ticket Type 2016 to 2018") +
+                scale_y_continuous(labels = comma)
+
+plot_grid(p_hist_tt_y_multicity_delta + coord_flip(), p_hist_tt_y_multicity_delta2 + coord_flip(), nrow = 1)
+
+```
+
+Delta analysis shows that between 2016 - 2018 the multicity was quite stable, while there was contnued increase in return flights. 
+
+**Multicity Ticket Type Conclusions**
+
+We dont see structural changes in the mutlicity vs return flights over the past few years. 
+
+###2.2.8 Passenger Profile Type Analysis
+
+The forward keys data set allows us to assess arrivals by Passenger Profile analysis
+
+
+```{r Volume of Arrivals by profile, echo=FALSE, fig.width=20, fig.height=5}
+
+# Inbound passengers by PaX Ex 2019
+# Select required rows from data frame 
+hist_tt_y_profile <- subset(pdset_14_18, select = c("Profile_Business", "Profile_Leisure", "Profile_Group", "Year"))
+names(hist_tt_y_profile) <- c("Business", "Leaisure", "Group", "Year")
+
+hist_tt_y_profile <- aggregate(hist_tt_y_profile, by = list(hist_tt_y_profile$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_profile <- hist_tt_y_profile[ , !names(hist_tt_y_profile) %in% drops] 
+names(hist_tt_y_profile) <- c("Year", "Business", "Leaisure", "Group")
+hist_tt_y_profile_melt <- melt(hist_tt_y_profile, id="Year")
+
+# Transpose the data set
+hist_tt_y_profile_transpose <- data.frame(t(hist_tt_y_profile))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_profile_transpose) <- as.matrix(hist_tt_y_profile_transpose[1, ])
+hist_tt_y_profile_transpose <- hist_tt_y_profile_transpose[-1, ]
+hist_tt_y_profile_transpose[] <- lapply(hist_tt_y_profile_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_profile_transpose <- as.data.frame(hist_tt_y_profile_transpose)
+hist_tt_y_profile_transpose$profile <- rownames(hist_tt_y_profile_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_profile_transpose) <- NULL
+
+
+# Add Total Row
+hist_tt_y_profile_transpose$Total <- hist_tt_y_profile_transpose$`2014` + 
+                                  hist_tt_y_profile_transpose$`2015` + 
+                                  hist_tt_y_profile_transpose$`2016` + 
+                                  hist_tt_y_profile_transpose$`2017` + 
+                                  hist_tt_y_profile_transpose$`2018`
+
+
+# Add levels to maintain order
+hist_tt_y_profile_transpose$profile <- factor(hist_tt_y_profile_transpose$profile, levels = hist_tt_y_profile_transpose$profile)
+
+p_hist_tt_profile_barchart <- ggplot(data = hist_tt_y_profile_transpose, aes(x = profile, y = Total)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Passenger Profile", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Arrivals to Paris by Profile Type 2014 - 2018")
+
+
+```
+
+
+```{r Boxplot of Daily Arrivals by profile, echo=FALSE, fig.width=20, fig.height=5}
+
+hist_tt_y_profile <- subset(pdset_14_18, select = c("Profile_Business", "Profile_Leisure", "Profile_Group", "Date"))
+names(hist_tt_y_profile) <- c("Business", "Leisure", "Group", "Date")
+
+hist_tt_y_profile_melt <- melt(hist_tt_y_profile, id = "Date")
+
+p_hist_tt_y_profile_boxplot <- ggplot(hist_tt_y_profile_melt, aes(x = variable, y = value))+
+        geom_boxplot(alpha = 0) +
+        geom_jitter(alpha = 0.1, color = "tomato") +
+        theme_light() +
+        labs(x = "Passenger Profile", y = "Daily Arrivals Volume") + 
+        ggtitle("Profile Type of Chinese Arrivals to Paris by Daily Arrival Volume")
+
+
+```
+
+
+```{r profile Plot barchart and boxplot, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot charts in grid
+plot_grid(p_hist_tt_profile_barchart + coord_flip(), p_hist_tt_y_profile_boxplot + coord_flip(), nrow = 1)
+
+```
+
+Paris is one of the most popular tourism destinations in Europe and 39% of the passenger travel is leisure related, while as an important hub, hosting several panEuropean corporate headquarters, around 36% of the flights to the city are business flights, while the remaiing are group travelers. 
+
+```{r profile heatmap years , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by booking profile time by year
+hist_tt_y_profile <- subset(pdset_14_18, select = c("Profile_Business", "Profile_Leisure", "Profile_Group", "Year"))
+hist_tt_y_profile <- aggregate(hist_tt_y_profile, by = list(hist_tt_y_profile$Year), FUN = sum)
+drops <- c("Year")
+
+hist_tt_y_profile <- hist_tt_y_profile[ , !names(hist_tt_y_profile) %in% drops] 
+names(hist_tt_y_profile) <- c("Year", "Business", "Leisure", "Group")
+hist_tt_y_profile_melt <- melt(hist_tt_y_profile, id="Year")
+names(hist_tt_y_profile_melt) <- c("Year", "profile Type", "Value")
+
+hist_tt_y_profile_melt$Year <- as.factor(hist_tt_y_profile_melt$Year)
+
+p_hist_tt_y_profile_melt_heatmap <- ggplot(hist_tt_y_profile_melt, aes(x = hist_tt_y_profile_melt$Year, y = hist_tt_y_profile_melt$`profile Type`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Year", expand = c(0, 0)) +
+                                    scale_y_discrete("Profile Type", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers by Profile Type of Chinese Arrivals to Paris by Year") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r profile heatmap months , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by profile by month
+hist_tt_m_profile <- subset(pdset_14_18, select = c("Profile_Business", "Profile_Leisure", "Profile_Group", "Month"))
+hist_tt_m_profile$Month <- as.integer(hist_tt_m_profile$Month)
+
+hist_tt_m_profile <- aggregate(hist_tt_m_profile, by = list(hist_tt_m_profile$Month), FUN = sum)
+drops <- c("Month")
+hist_tt_m_profile <- hist_tt_m_profile[ , !names(hist_tt_m_profile) %in% drops] 
+names(hist_tt_m_profile) <- c("Month", "Business", "Leisure", "Group")
+hist_tt_m_profile_melt <- melt(hist_tt_m_profile, id="Month")
+names(hist_tt_m_profile_melt) <- c("Month","profile Type", "Value")
+
+hist_tt_m_profile_melt$Month <- as.factor(hist_tt_m_profile_melt$Month)
+
+p_hist_tt_m_profile_heatmap <- ggplot(hist_tt_m_profile_melt, aes(x = hist_tt_m_profile_melt$Month, y = hist_tt_m_profile_melt$`profile Type`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Month", expand = c(0, 0)) +
+                                    scale_y_discrete("Profile Type", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers by Profile Type of Chinese Arrivals to Paris by Month") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r profile Heatmaps plots, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot heatmaps
+plot_grid(p_hist_tt_y_profile_melt_heatmap, p_hist_tt_m_profile_heatmap, nrow = 2)
+
+```
+
+Heatmap further confirms the decline in the group travelers over the past few years (as we discussed in earlier sections). Despite some year over year movements, the leisure and business travel trends remain non volatile. In 2018, we saw a visible increase in leisure travel. Not surprisingly, monthly analysis shows increased level of leisure flights in the popular summer months, while the business travel flights do nto show a signficant seasonality. 
+
+```{r Change in profile by Year, echo=FALSE, fig.width=20, fig.height=5}
+
+# Select required rows from data frame 
+hist_tt_y_profile <- subset(pdset_14_18, select = c("Profile_Business", "Profile_Leisure", "Profile_Group", "Year"))
+names(hist_tt_y_profile) <- c("Business", "Leaisure", "Group", "Year")
+
+hist_tt_y_profile <- aggregate(hist_tt_y_profile, by = list(hist_tt_y_profile$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_profile <- hist_tt_y_profile[ , !names(hist_tt_y_profile) %in% drops] 
+names(hist_tt_y_profile) <- c("Year", "Business", "Leaisure", "Group")
+hist_tt_y_profile_melt <- melt(hist_tt_y_profile, id="Year")
+
+# Transpose the data set
+hist_tt_y_profile_transpose <- data.frame(t(hist_tt_y_profile))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_profile_transpose) <- as.matrix(hist_tt_y_profile_transpose[1, ])
+hist_tt_y_profile_transpose <- hist_tt_y_profile_transpose[-1, ]
+hist_tt_y_profile_transpose[] <- lapply(hist_tt_y_profile_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_profile_transpose <- as.data.frame(hist_tt_y_profile_transpose)
+hist_tt_y_profile_transpose$profile <- rownames(hist_tt_y_profile_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_profile_transpose) <- NULL
+
+# Add delta column
+hist_tt_y_profile_transpose$delta <- hist_tt_y_profile_transpose$`2018` - hist_tt_y_profile_transpose$`2014`
+hist_tt_y_profile_transpose$delta2 <- hist_tt_y_profile_transpose$`2018` - hist_tt_y_profile_transpose$`2016`
+
+# Add levels to maintain order
+hist_tt_y_profile_transpose$profile <- factor(hist_tt_y_profile_transpose$profile, levels = hist_tt_y_profile_transpose$profile)
+
+# Create Delta chart
+p_hist_tt_y_profile_delta <- ggplot(data = hist_tt_y_profile_transpose, aes(x = profile, y = delta, label = delta)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `profile`, yend = delta, xend = `profile`), color =  "black") +
+                labs(x = "Profile Type", y = "Delta Between 2018 and 2014") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Paris by Profile Type 2014 to 2018") +
+                scale_y_continuous(labels = comma)
+
+p_hist_tt_y_profile_delta2 <- ggplot(data = hist_tt_y_profile_transpose, aes(x = profile, y = delta2, label = delta2)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `profile`, yend = delta2, xend = `profile`), color =  "black") +
+                labs(x = "Profile Type", y = "Delta Between 2018 and 2016") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Paris by Profile Type 2016 to 2018") +
+                scale_y_continuous(labels = comma)
+
+plot_grid(p_hist_tt_y_profile_delta + coord_flip(), p_hist_tt_y_profile_delta2 + coord_flip(), nrow = 1)
+
+```
+
+Delta analysis also confirms the decline in group travelers, while we continue to see a relatively higher increase in leisure travelers in the 2016 - 2018 period. 
+
+**Passenger Profile Type Conclusions**
+
+Given both the leisure and business travelers are relatively balanced (39% vs 36% of total travelers), DFS will need to cater to both audiences in its Parisian shop. 
+
+
+###2.2.9 Week Type Analysis
+
+The forward keys data set allows us to assess arrivals by Return or Multicity ticket type analysis
+
+```{r Volume of Arrivals by workweek, echo=FALSE, fig.width=20, fig.height=5}
+
+# Inbound passengers by PaX Ex 2019
+# Select required rows from data frame 
+hist_tt_y_workweek <- subset(pdset_14_18, select = c("TypeSt_Weekendstay", "TypeSt_Workweekstay", "TypeSt_Combinedstay", "Year"))
+names(hist_tt_y_workweek) <- c("Weekend", "Work Week", "Combined", "Year")
+
+hist_tt_y_workweek <- aggregate(hist_tt_y_workweek, by = list(hist_tt_y_workweek$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_workweek <- hist_tt_y_workweek[ , !names(hist_tt_y_workweek) %in% drops] 
+names(hist_tt_y_workweek) <- c("Year", "Weekend", "Work Week", "Combined")
+hist_tt_y_workweek_melt <- melt(hist_tt_y_workweek, id="Year")
+
+# Transpose the data set
+hist_tt_y_workweek_transpose <- data.frame(t(hist_tt_y_workweek))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_workweek_transpose) <- as.matrix(hist_tt_y_workweek_transpose[1, ])
+hist_tt_y_workweek_transpose <- hist_tt_y_workweek_transpose[-1, ]
+hist_tt_y_workweek_transpose[] <- lapply(hist_tt_y_workweek_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_workweek_transpose <- as.data.frame(hist_tt_y_workweek_transpose)
+hist_tt_y_workweek_transpose$workweek <- rownames(hist_tt_y_workweek_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_workweek_transpose) <- NULL
+
+
+# Add Total Row
+hist_tt_y_workweek_transpose$Total <- hist_tt_y_workweek_transpose$`2014` + 
+                                  hist_tt_y_workweek_transpose$`2015` + 
+                                  hist_tt_y_workweek_transpose$`2016` + 
+                                  hist_tt_y_workweek_transpose$`2017` + 
+                                  hist_tt_y_workweek_transpose$`2018`
+
+
+# Add levels to maintain order
+hist_tt_y_workweek_transpose$workweek <- factor(hist_tt_y_workweek_transpose$workweek, levels = hist_tt_y_workweek_transpose$workweek)
+
+p_hist_tt_workweek_barchart <- ggplot(data = hist_tt_y_workweek_transpose, aes(x = workweek, y = Total)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Week Type", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Arrivals to Paris by Week Type 2014 - 2018")
+
+
+```
+
+
+```{r Boxplot of Daily Arrivals by workweek, echo=FALSE, fig.width=20, fig.height=5}
+
+hist_tt_y_workweek <- subset(pdset_14_18, select = c("TypeSt_Weekendstay", "TypeSt_Workweekstay", "TypeSt_Combinedstay", "Date"))
+names(hist_tt_y_workweek) <- c("Weekend", "Work Week", "Combined", "Date")
+
+hist_tt_y_workweek_melt <- melt(hist_tt_y_workweek, id = "Date")
+
+p_hist_tt_y_workweek_boxplot <- ggplot(hist_tt_y_workweek_melt, aes(x = variable, y = value))+
+        geom_boxplot(alpha = 0) +
+        geom_jitter(alpha = 0.1, color = "tomato") +
+        theme_light() +
+        labs(x = "Week Type", y = "Daily Arrivals Volume") + 
+        ggtitle("Week Type of Chinese Arrivals to Paris by Daily Arrival Volume")
+
+
+```
+
+
+```{r workweek Plot barchart and boxplot, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot charts in grid
+plot_grid(p_hist_tt_workweek_barchart + coord_flip(), p_hist_tt_y_workweek_boxplot + coord_flip(), nrow = 1)
+
+```
+
+Comments
+Comments
+
+```{r workweek heatmap years , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by booking workweek time by year
+hist_tt_y_workweek <- subset(pdset_14_18, select = c("TypeSt_Weekendstay", "TypeSt_Workweekstay", "TypeSt_Combinedstay", "Year"))
+hist_tt_y_workweek <- aggregate(hist_tt_y_workweek, by = list(hist_tt_y_workweek$Year), FUN = sum)
+drops <- c("Year")
+
+hist_tt_y_workweek <- hist_tt_y_workweek[ , !names(hist_tt_y_workweek) %in% drops] 
+names(hist_tt_y_workweek) <- c("Year", "Weekend", "Work Week", "Combined")
+hist_tt_y_workweek_melt <- melt(hist_tt_y_workweek, id="Year")
+names(hist_tt_y_workweek_melt) <- c("Year", "Work Week Type", "Value")
+
+hist_tt_y_workweek_melt$Year <- as.factor(hist_tt_y_workweek_melt$Year)
+
+p_hist_tt_y_workweek_melt_heatmap <- ggplot(hist_tt_y_workweek_melt, aes(x = hist_tt_y_workweek_melt$Year, y = hist_tt_y_workweek_melt$`Work Week Type`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Year", expand = c(0, 0)) +
+                                    scale_y_discrete("Week Type", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers by Week Type of Chinese Arrivals to Paris by Year") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r workweek heatmap months , echo=FALSE, fig.width=20, fig.height=5}
+
+# Create melted data set for arrivals by workweek by month
+hist_tt_m_workweek <- subset(pdset_14_18, select = c("TypeSt_Weekendstay", "TypeSt_Workweekstay", "TypeSt_Combinedstay", "Month"))
+hist_tt_m_workweek$Month <- as.integer(hist_tt_m_workweek$Month)
+
+hist_tt_m_workweek <- aggregate(hist_tt_m_workweek, by = list(hist_tt_m_workweek$Month), FUN = sum)
+drops <- c("Month")
+hist_tt_m_workweek <- hist_tt_m_workweek[ , !names(hist_tt_m_workweek) %in% drops] 
+names(hist_tt_m_workweek) <- c("Month", "Weekend", "Work Week", "Combined")
+hist_tt_m_workweek_melt <- melt(hist_tt_m_workweek, id="Month")
+names(hist_tt_m_workweek_melt) <- c("Month","Work Week Type", "Value")
+
+hist_tt_m_workweek_melt$Month <- as.factor(hist_tt_m_workweek_melt$Month)
+
+p_hist_tt_m_workweek_heatmap <- ggplot(hist_tt_m_workweek_melt, aes(x = hist_tt_m_workweek_melt$Month, y = hist_tt_m_workweek_melt$`Work Week Type`)) +
+                                    geom_tile(aes(fill = Value)) +
+                                    scale_x_discrete("Month", expand = c(0, 0)) +
+                                    scale_y_discrete("Week Type", expand = c(0, 0)) +
+                                    scale_fill_gradient("Number of Arrivals", low = "white", high = "steelblue" ) +
+                                    theme_bw() +
+                                    ggtitle("Passengers by Week Type of Chinese Arrivals to Paris by Month") +
+                                    theme(panel.grid.major = element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+
+```
+
+
+```{r workweek Heatmaps plots, echo=FALSE, fig.width=20, fig.height=7}
+
+# Plot heatmaps
+plot_grid(p_hist_tt_y_workweek_melt_heatmap, p_hist_tt_m_workweek_heatmap, nrow = 2)
+
+```
+
+Comments
+Comments
+
+```{r Change in workweek by Year, echo=FALSE, fig.width=20, fig.height=5}
+
+# Select required rows from data frame 
+hist_tt_y_workweek <- subset(pdset_14_18, select = c("TypeSt_Weekendstay", "TypeSt_Workweekstay", "TypeSt_Combinedstay", "Year"))
+names(hist_tt_y_workweek) <- c("Weekend", "Work Week", "Combined", "Year")
+
+hist_tt_y_workweek <- aggregate(hist_tt_y_workweek, by = list(hist_tt_y_workweek$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_workweek <- hist_tt_y_workweek[ , !names(hist_tt_y_workweek) %in% drops] 
+names(hist_tt_y_workweek) <- c("Year", "Weekend", "Work Week", "Combined")
+hist_tt_y_workweek_melt <- melt(hist_tt_y_workweek, id="Year")
+
+# Transpose the data set
+hist_tt_y_workweek_transpose <- data.frame(t(hist_tt_y_workweek))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_workweek_transpose) <- as.matrix(hist_tt_y_workweek_transpose[1, ])
+hist_tt_y_workweek_transpose <- hist_tt_y_workweek_transpose[-1, ]
+hist_tt_y_workweek_transpose[] <- lapply(hist_tt_y_workweek_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_workweek_transpose <- as.data.frame(hist_tt_y_workweek_transpose)
+hist_tt_y_workweek_transpose$workweek <- rownames(hist_tt_y_workweek_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_workweek_transpose) <- NULL
+
+# Add delta column
+hist_tt_y_workweek_transpose$delta <- hist_tt_y_workweek_transpose$`2018` - hist_tt_y_workweek_transpose$`2014`
+hist_tt_y_workweek_transpose$delta2 <- hist_tt_y_workweek_transpose$`2018` - hist_tt_y_workweek_transpose$`2016`
+
+# Add levels to maintain order
+hist_tt_y_workweek_transpose$workweek <- factor(hist_tt_y_workweek_transpose$workweek, levels = hist_tt_y_workweek_transpose$workweek)
+
+# Create Delta chart
+p_hist_tt_y_workweek_delta <- ggplot(data = hist_tt_y_workweek_transpose, aes(x = workweek, y = delta, label = delta)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `workweek`, yend = delta, xend = `workweek`), color =  "black") +
+                labs(x = "Week Type", y = "Delta Between 2018 and 2014") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Paris by Week Type 2014 to 2018") +
+                scale_y_continuous(labels = comma)
+
+p_hist_tt_y_workweek_delta2 <- ggplot(data = hist_tt_y_workweek_transpose, aes(x = workweek, y = delta2, label = delta2)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `workweek`, yend = delta2, xend = `workweek`), color =  "black") +
+                labs(x = "Week Type", y = "Delta Between 2018 and 2016") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Paris by Week Type 2016 to 2018") +
+                scale_y_continuous(labels = comma)
+
+plot_grid(p_hist_tt_y_workweek_delta + coord_flip(), p_hist_tt_y_workweek_delta2 + coord_flip(), nrow = 1)
+
+```
+
+Comments
+
+**Conclusion**
+
++ Comments
++ Comments
+
+
+##X.X Paris and Venice Comparison
+
+Whilst current focus is on Paris and predicting passenger flows in that location, given DFS has a store in Venice in the future we will look to do understand passengers arrivals into that location and the subsequent relationship with sales at the Venice store
+
+However, at this stage we wanted to do some preliminary analysis to compare the two locations
+
+```{r Venice Total Traveler Analysis, echo=FALSE, fig.width=20, fig.height=15}
+
+# Create Venice subset to exclude partial 2019 data
+vdset_14_18 <- subset(vdset, Year <= 2018)
+
+# Define colours
+barfill = "lightskyblue2"
+
+# Inbound passengers by Year Ex 2019
+v_hist_tt_y <- ggplot(data = vdset_14_18, aes(x = Year, y = Total_trav)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Year", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Passengers Arrivals Direct to Venice by Year 2014 - 2018")
+
+# Inbound passengers by Month Ex 2019
+v_hist_tt_m <- ggplot(data = vdset_14_18, aes(x = Month, y = Total_trav)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Month", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Passengers Arrivals Direct to Venice by Month 2014 - 2018")
+
+# Inbound passengers by Day of Week Ex 2019 
+v_hist_tt_d <- ggplot(data = vdset_14_18, aes(x = WeekDay, y = Total_trav)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Week Day", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Passengers Arrivals Direct to Venice by Weekday 2014 - 2018")
+
+# Inbound passengers by Week Ex 2019 
+v_hist_tt_wk <- ggplot(data = vdset_14_18, aes(x = Week, y = Total_trav)) +
+                geom_bar(stat="identity", fill = barfill) + 
+                theme_light() +
+                labs(x = "Week", y = "Total Inbound Passengers") + 
+                scale_y_continuous(labels = comma) +
+                ggtitle("Total Chinese Passengers Arrivals Direct to Venice by Week 2014 - 2018")
+
+
+# Plot grid layout using plot_grid function
+plot_grid(p_hist_tt_y, v_hist_tt_y, p_hist_tt_m, v_hist_tt_m, p_hist_tt_d, v_hist_tt_d, p_hist_tt_wk, v_hist_tt_wk, nrow = 4)
+
+```
+
+Whilst the volumes at an annual level appear quite different, perhaps most impacted by the terrorist attacks in Paris in November 2015, the profiles of the other charts appear quite similar
+
++ Peak month for travel is July for both cities, with December recieving the lowst number of arrivals
++ Saturday is the most common day of arrival, with Friday the least popular. This perhaps reflects the distance required to travel; passengers leaving on a Friday in China following a week of work will arrive in Europe on the Saturday
++ Arrivals by week show a very similar pattern. There is a small peak around week 6-8 in both cases, before a lull then steady rise to the peak months of summer. Whilst there is a subsequent large drop-off fromweek 35. The Golden Week annual holiday at the beginning of October drives a large increase over that period, before a continued steady decline towards the winter period
+
+
+
+```{r Venice Pax Delta Comparison by Year, echo=FALSE, fig.width=20, fig.height=7}
+
+
+## Passengers per Booking
+
+# Select required rows from data frame 
+hist_tt_y_pax <- subset(vdset_14_18, select = c("ppb_1pax", "ppb_2pax", "ppb_3pax", "ppb_4pax","ppb_5pax", "ppb_6to9pax", "ppb_10pl_pax", "Year"))
+names(hist_tt_y_pax) <- c("1 Passenger per Booking", "2 Passengers per Booking", "3 Passengers per Booking", "4 Passengers per Booking","5 Passengers per Booking", "6 to 9 Passengers per Booking", "10 Plus Passengers per", "Year")
+
+hist_tt_y_pax <- aggregate(hist_tt_y_pax, by = list(hist_tt_y_pax$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_pax <- hist_tt_y_pax[ , !names(hist_tt_y_pax) %in% drops] 
+names(hist_tt_y_pax) <- c("Year", "1 Passenger per Booking", "2 Passengers per Booking", "3 Passengers per Booking", "4 Passengers per Booking","5 Passengers per Booking", "6 to 9 Passengers per Booking", "10 Plus Passengers per")
+hist_tt_y_pax_melt <- melt(hist_tt_y_pax, id="Year")
+
+# Transpose the data set
+hist_tt_y_pax_transpose <- data.frame(t(hist_tt_y_pax))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_pax_transpose) <- as.matrix(hist_tt_y_pax_transpose[1, ])
+hist_tt_y_pax_transpose <- hist_tt_y_pax_transpose[-1, ]
+hist_tt_y_pax_transpose[] <- lapply(hist_tt_y_pax_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_pax_transpose <- as.data.frame(hist_tt_y_pax_transpose)
+hist_tt_y_pax_transpose$pax <- rownames(hist_tt_y_pax_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_pax_transpose) <- NULL
+
+# Add delta column
+hist_tt_y_pax_transpose$delta <- hist_tt_y_pax_transpose$`2018` - hist_tt_y_pax_transpose$`2014`
+hist_tt_y_pax_transpose$delta2 <- hist_tt_y_pax_transpose$`2018` - hist_tt_y_pax_transpose$`2016`
+
+
+# Add levels to maintain order
+hist_tt_y_pax_transpose$pax <- factor(hist_tt_y_pax_transpose$pax, levels = hist_tt_y_pax_transpose$pax)
+
+# Create Delta chart
+v_hist_tt_y_pax_delta <- ggplot(data = hist_tt_y_pax_transpose, aes(x = pax, y = delta, label = delta)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `pax`, yend = delta, xend = `pax`), color =  "black") +
+                labs(x = "Passengers per Booking", y = "Delta Between 2018 and 2014") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Venice by Passengers per Booking 2014 to 2018") +
+                scale_y_continuous(labels = comma)
+
+v_hist_tt_y_pax_delta2 <- ggplot(data = hist_tt_y_pax_transpose, aes(x = pax, y = delta2, label = delta2)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `pax`, yend = delta2, xend = `pax`), color =  "black") +
+                labs(x = "Passengers per Booking", y = "Delta Between 2018 and 2016") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Venice by Passengers per Booking 2016 to 2018") +
+                scale_y_continuous(labels = comma)
+
+# Plot grid layout using plot_grid function
+plot_grid(p_hist_tt_y_pax_delta + coord_flip(), v_hist_tt_y_pax_delta + coord_flip(), p_hist_tt_y_pax_delta2 + coord_flip(), v_hist_tt_y_pax_delta2 + coord_flip(), nrow = 2)
+
+```
+
+Comparing length of stay post 2016, the trends appear to show that large groups of 10+ passengers per booking have declined across both Paris and Venice, with the rise in independent travels resulting in increases in the 1 and 2 passengers per booking category
+
+
+```{r Venice Cabin Delta Comparison by Year, echo=FALSE, fig.width=20, fig.height=7}
+
+## Cabin Analysis
+
+# Select required rows from data frame 
+hist_tt_y_cabin <- subset(vdset_14_18, select = c("Cabin_Economy", "Cabin_EconomyPremium", "Cabin_Business", "Cabin_First", "Year"))
+names(hist_tt_y_cabin) <- c("Economy", "Premium Economy", "Business", "First", "Year")
+
+hist_tt_y_cabin <- aggregate(hist_tt_y_cabin, by = list(hist_tt_y_cabin$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_cabin <- hist_tt_y_cabin[ , !names(hist_tt_y_cabin) %in% drops] 
+names(hist_tt_y_cabin) <- c("Year", "Economy", "Premium Economy", "Business", "First")
+hist_tt_y_cabin_melt <- melt(hist_tt_y_cabin, id="Year")
+
+# Transpose the data set
+hist_tt_y_cabin_transpose <- data.frame(t(hist_tt_y_cabin))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_cabin_transpose) <- as.matrix(hist_tt_y_cabin_transpose[1, ])
+hist_tt_y_cabin_transpose <- hist_tt_y_cabin_transpose[-1, ]
+hist_tt_y_cabin_transpose[] <- lapply(hist_tt_y_cabin_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_cabin_transpose <- as.data.frame(hist_tt_y_cabin_transpose)
+hist_tt_y_cabin_transpose$cabin <- rownames(hist_tt_y_cabin_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_cabin_transpose) <- NULL
+
+# Add delta column
+hist_tt_y_cabin_transpose$delta <- hist_tt_y_cabin_transpose$`2018` - hist_tt_y_cabin_transpose$`2014`
+hist_tt_y_cabin_transpose$delta2 <- hist_tt_y_cabin_transpose$`2018` - hist_tt_y_cabin_transpose$`2016`
+
+
+# Add levels to maintain order
+hist_tt_y_cabin_transpose$cabin <- factor(hist_tt_y_cabin_transpose$cabin, levels = hist_tt_y_cabin_transpose$cabin)
+
+# Create Delta chart
+v_hist_tt_y_cabin_delta <- ggplot(data = hist_tt_y_cabin_transpose, aes(x = cabin, y = delta, label = delta)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `cabin`, yend = delta, xend = `cabin`), color =  "black") +
+                labs(x = "Cabin Type", y = "Delta Between 2018 and 2014") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Venice by Cabin Type 2014 to 2018") +
+                scale_y_continuous(labels = comma)
+
+v_hist_tt_y_cabin_delta2 <- ggplot(data = hist_tt_y_cabin_transpose, aes(x = cabin, y = delta2, label = delta2)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `cabin`, yend = delta2, xend = `cabin`), color =  "black") +
+                labs(x = "Cabin Type", y = "Delta Between 2018 and 2016") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Venice by Cabin Type 2016 to 2018") +
+                scale_y_continuous(labels = comma)
+
+# Plot grid layout using plot_grid function
+plot_grid(p_hist_tt_y_cabin_delta + coord_flip(), v_hist_tt_y_cabin_delta + coord_flip(), p_hist_tt_y_cabin_delta2 + coord_flip(), v_hist_tt_y_cabin_delta2 + coord_flip(), nrow = 2)
+
+```
+
+Arrivals by Cabin type appear quite different, likely as a result of the attacks in Paris in November 2015. Econmy passengers appear to have been most impacted by the eents in Paris but are showing signs of recovery from 2016. However, post 2016, Venice has seen a slight decline in economy arrivals, though an incease across the overall 5 year period
+
+
+```{r Venice Multicity Ticket Delta Comparison by Year, echo=FALSE, fig.width=20, fig.height=7}
+
+## Multicity Ticket Analysis
+
+# Select required rows from data frame 
+hist_tt_y_multicity <- subset(vdset_14_18, select = c("OneRet_Oneway", "OneRet_Return", "OneRet_MultiCity", "Year"))
+names(hist_tt_y_multicity) <- c("Oneway", "Return", "Multicity", "Year")
+
+hist_tt_y_multicity <- aggregate(hist_tt_y_multicity, by = list(hist_tt_y_multicity$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_multicity <- hist_tt_y_multicity[ , !names(hist_tt_y_multicity) %in% drops] 
+names(hist_tt_y_multicity) <- c("Year", "Oneway", "Return", "Multicity")
+hist_tt_y_multicity_melt <- melt(hist_tt_y_multicity, id="Year")
+
+# Transpose the data set
+hist_tt_y_multicity_transpose <- data.frame(t(hist_tt_y_multicity))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_multicity_transpose) <- as.matrix(hist_tt_y_multicity_transpose[1, ])
+hist_tt_y_multicity_transpose <- hist_tt_y_multicity_transpose[-1, ]
+hist_tt_y_multicity_transpose[] <- lapply(hist_tt_y_multicity_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_multicity_transpose <- as.data.frame(hist_tt_y_multicity_transpose)
+hist_tt_y_multicity_transpose$multicity <- rownames(hist_tt_y_multicity_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_multicity_transpose) <- NULL
+
+# Add delta column
+hist_tt_y_multicity_transpose$delta <- hist_tt_y_multicity_transpose$`2018` - hist_tt_y_multicity_transpose$`2014`
+hist_tt_y_multicity_transpose$delta2 <- hist_tt_y_multicity_transpose$`2018` - hist_tt_y_multicity_transpose$`2016`
+
+# Add levels to maintain order
+hist_tt_y_multicity_transpose$multicity <- factor(hist_tt_y_multicity_transpose$multicity, levels = hist_tt_y_multicity_transpose$multicity)
+
+# Create Delta chart
+v_hist_tt_y_multicity_delta <- ggplot(data = hist_tt_y_multicity_transpose, aes(x = multicity, y = delta, label = delta)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `multicity`, yend = delta, xend = `multicity`), color =  "black") +
+                labs(x = "Multicity Ticket Type", y = "Delta Between 2018 and 2014") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Venice by Multicity Ticket Type 2014 to 2018") +
+                scale_y_continuous(labels = comma)
+
+v_hist_tt_y_multicity_delta2 <- ggplot(data = hist_tt_y_multicity_transpose, aes(x = multicity, y = delta2, label = delta2)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `multicity`, yend = delta2, xend = `multicity`), color =  "black") +
+                labs(x = "Multicity Ticket Type", y = "Delta Between 2018 and 2016") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Venice by Multicity Ticket Type 2016 to 2018") +
+                scale_y_continuous(labels = comma)
+
+# Plot grid layout using plot_grid function
+plot_grid(p_hist_tt_y_multicity_delta + coord_flip(), v_hist_tt_y_multicity_delta + coord_flip(), p_hist_tt_y_multicity_delta2 + coord_flip(), v_hist_tt_y_multicity_delta2 + coord_flip(),nrow = 2)
+
+```
+
+Recent trends from 2016 would indicate a shift towards return tickets, aligning with the notion of less large group travellers who would arrive on multicity tickets
+
+```{r Venice Profile Delta Comparison by Year, echo=FALSE, fig.width=20, fig.height=7}
+
+## Profile Ticket Analysis
+
+# Select required rows from data frame 
+hist_tt_y_profile <- subset(vdset_14_18, select = c("Profile_Business", "Profile_Leisure", "Profile_Group", "Year"))
+names(hist_tt_y_profile) <- c("Business", "Leaisure", "Group", "Year")
+
+hist_tt_y_profile <- aggregate(hist_tt_y_profile, by = list(hist_tt_y_profile$Year), FUN = sum)
+drops <- c("Year")
+
+# Melt into desired format
+hist_tt_y_profile <- hist_tt_y_profile[ , !names(hist_tt_y_profile) %in% drops] 
+names(hist_tt_y_profile) <- c("Year", "Business", "Leaisure", "Group")
+hist_tt_y_profile_melt <- melt(hist_tt_y_profile, id="Year")
+
+# Transpose the data set
+hist_tt_y_profile_transpose <- data.frame(t(hist_tt_y_profile))
+
+# Make first row the column names and delete first row
+names(hist_tt_y_profile_transpose) <- as.matrix(hist_tt_y_profile_transpose[1, ])
+hist_tt_y_profile_transpose <- hist_tt_y_profile_transpose[-1, ]
+hist_tt_y_profile_transpose[] <- lapply(hist_tt_y_profile_transpose, function(x) type.convert(as.character(x)))
+
+# Create new taret column
+hist_tt_y_profile_transpose <- as.data.frame(hist_tt_y_profile_transpose)
+hist_tt_y_profile_transpose$profile <- rownames(hist_tt_y_profile_transpose)
+
+# Create first ID row 
+row.names(hist_tt_y_profile_transpose) <- NULL
+
+# Add delta column
+hist_tt_y_profile_transpose$delta <- hist_tt_y_profile_transpose$`2018` - hist_tt_y_profile_transpose$`2014`
+hist_tt_y_profile_transpose$delta2 <- hist_tt_y_profile_transpose$`2018` - hist_tt_y_profile_transpose$`2016`
+
+# Add levels to maintain order
+hist_tt_y_profile_transpose$profile <- factor(hist_tt_y_profile_transpose$profile, levels = hist_tt_y_profile_transpose$profile)
+
+# Create Delta chart
+v_hist_tt_y_profile_delta <- ggplot(data = hist_tt_y_profile_transpose, aes(x = profile, y = delta, label = delta)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `profile`, yend = delta, xend = `profile`), color =  "black") +
+                labs(x = "Profile Type", y = "Delta Between 2018 and 2014") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Venice by Profile Type 2014 to 2018") +
+                scale_y_continuous(labels = comma)
+
+v_hist_tt_y_profile_delta2 <- ggplot(data = hist_tt_y_profile_transpose, aes(x = profile, y = delta2, label = delta2)) +
+                geom_point(stat="identity", fill = "black", size = 12) + 
+                theme_light() +
+                geom_text(color = "white", size = 4) +
+                geom_segment(aes(y = 0, x = `profile`, yend = delta2, xend = `profile`), color =  "black") +
+                labs(x = "Profile Type", y = "Delta Between 2018 and 2016") + 
+                ggtitle("Delta in Chinese Passenger Arrivals to Venice by Profile Type 2016 to 2018") +
+                scale_y_continuous(labels = comma)
+
+# Plot grid layout using plot_grid function
+plot_grid(p_hist_tt_y_profile_delta + coord_flip(), v_hist_tt_y_profile_delta + coord_flip(), p_hist_tt_y_profile_delta2 + coord_flip(), v_hist_tt_y_profile_delta2 + coord_flip(), nrow = 2)
+
+```
+
+As per the ticket type charts above, the charts assessing customer profile both show a recent trends towards less group bookings
+
+**Conclusion**
+
++ Comments
++ Comments
+
+
+```{r Arrivals Comparison, echo=FALSE, fig.width=20, fig.height=10}
+
+# 
+hist_tt_d_pv <- ggplot() +
+    geom_line(data = pdset, aes(x = Date, y = Total_trav), colour = "red") +
+    geom_line(data = vdset, aes(x = Date, y = Total_trav), colour = "blue") + 
+    labs(x = "Date", y = "Daily Passenger Arrivals") + 
+    ggtitle("Paris vs Venice Daily Chinese Passenger Arrivals") +
+    scale_y_continuous(labels = comma)
+
+
+hist_tt_d_pv
+
+```
+
+
+```{r Percentage change in Arrivals Daily, echo=FALSE, fig.width=20, fig.height=10}
+
+# Create total travel set for Paris
+hist_tt_p_only <- subset(pdset, select = c("Date", "Total_trav"))
+names(hist_tt_p_only) <- c("Date", "Paris_Arrivals")
+
+# Create total travel set for Venice
+hist_tt_v_only <- subset(vdset, select = c("Total_trav"))
+names(hist_tt_v_only) <- c("Venice_Arrivals")
+
+# Cbind two data sets
+hist_tt_combined_daily <- cbind(hist_tt_p_only, hist_tt_v_only)
+
+# Add columns for Percentage change
+hist_tt_combined_daily$p_change <- ((hist_tt_combined_daily$Paris_Arrivals/lag(hist_tt_combined_daily$Paris_Arrivals) - 1) * 100)
+hist_tt_combined_daily$v_change <- ((hist_tt_combined_daily$Venice_Arrivals/lag(hist_tt_combined_daily$Venice_Arrivals) - 1) * 100)
+
+# Remove NA
+hist_tt_combined_daily <- na.omit(hist_tt_combined_daily)
+
+hist_tt_d_pv_percentage <- ggplot(hist_tt_combined_daily, aes(x = Date)) +
+          geom_line(aes(y = p_change), colour = "red") +
+          geom_line(aes(y = v_change), colour = "blue") + 
+          labs(x = "Date", y = "Percentage Change in Daily Passenger Arrivals") + 
+          ggtitle("Paris vs Venice Percentage Change in Daily Chinese Passenger Arrivals") +
+          scale_y_continuous(labels = comma)
+hist_tt_d_pv_percentage
+
+```
+
+```{r Correlation Analysis, echo=FALSE}
+
+# Pearson correlation
+cor.test(pdset$Total_trav, vdset$Total_trav)
+
+```
+
+
